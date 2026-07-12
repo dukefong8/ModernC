@@ -172,6 +172,21 @@ UTEST(arena, oom_longjmp) {
   ASSERT_EQ(oom_hit, 1);
 }
 
+UTEST(arena, oom_longjmp_clears_handler) {
+  enum { size = 64 };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  jmp_buf jmpbuf;
+  if (ArenaOOM(arena, jmpbuf)) {
+    ASSERT_TRUE(arena->oom == NULL);
+    return;
+  }
+
+  New(arena, char, size * 2);
+  ASSERT_TRUE(false);
+}
+
 UTEST(arena, oom_null_still_works_after_full) {
   enum { size = 128 };
   byte mem[size] = {0};

@@ -41,6 +41,17 @@ UTEST(astr, split_empty) {
   ASSERT_EQ(i, 0);
 }
 
+UTEST(astr, split_empty_separator_returns_input) {
+  int count = 0;
+  for (astr_split(it, "", astr("hello"))) {
+    count++;
+    ASSERT_TRUE(astr_equals(it.token, astr("hello")));
+    if (count > 1)
+      break;
+  }
+  ASSERT_EQ(count, 1);
+}
+
 UTEST(astr, split_single_char) {
   int i = 0;
   for (astr_split(it, ",", astr("x"))) {

@@ -311,7 +311,7 @@ static void arena_restore(Arena** a) {
     __auto_type _s = slice;                                                   \
     isize _start = start;                                                     \
     isize _len = length;                                                      \
-    Assert(_start >= 0 && _len >= 0 && _start + _len <= _s.len);              \
+    Assert(_start >= 0 && _len >= 0 && _start <= _s.len - _len);              \
     if (_len > 0) {                                                           \
       _s.data = New(arena, __typeof__(_s.data[0]), _len, (_s.data + _start)); \
     } else                                                                    \
@@ -402,9 +402,18 @@ ARENA_INLINE void arena_reset(Arena* arena) {
  *     fputs("!!! OOM exit !!!\n", stderr);
  *     exit(1);
  *   }
+ *
+ * jmpbuf must remain alive for as long as the arena may perform allocations.
+ * The handler is cleared automatically when OOM occurs.
  */
 #ifndef OOM_TRAP
-#define ArenaOOM(arena, jmpbuf) ((arena)->oom = &jmpbuf, setjmp(jmpbuf))
+// Internal helper that keeps setjmp as the complete controlling expression.
+ARENA_INLINE jmp_buf* arena_oom_set(Arena* arena, jmp_buf* jmpbuf) {
+  Assert(arena != NULL && "arena cannot be NULL");
+  arena->oom = jmpbuf;
+  return jmpbuf;
+}
+#define ArenaOOM(arena, jmpbuf) setjmp(*arena_oom_set((arena), &(jmpbuf)))
 #else
 #define ArenaOOM(arena, jmpbuf) ((void)jmpbuf, false)
 #endif
@@ -468,8 +477,10 @@ HANDLE_OOM:
 #ifdef OOM_TRAP
   Assert(!OOM_TRAP);
 #else
-  Assert(arena->oom);
-  longjmp(*arena->oom, 1);
+  jmp_buf* oom = arena->oom;
+  Assert(oom);
+  arena->oom = NULL;
+  longjmp(*oom, 1);
 #endif
   return NULL;
 }
@@ -828,6 +839,10 @@ ARENA_INLINE astr _astr_split_by_char(astr s, const unsigned char table[static 2
 // Internal helper for astr_split
 ARENA_INLINE astr _astr_split(astr s, astr sep, isize* pos) {
   astr slice = {s.data + *pos, s.len - *pos};
+  if (sep.len == 0) {
+    *pos = s.len;
+    return slice;
+  }
   const char* res = memmem(slice.data, slice.len, sep.data, sep.len);
   astr token = {slice.data, res ? (res - slice.data) : slice.len};
   *pos += token.len + sep.len;
