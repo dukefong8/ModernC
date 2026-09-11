@@ -224,7 +224,38 @@ static void autofree_impl(void* p) {
 
 #define CONCAT_(a, b) a##b
 #define CONCAT(a, b)  CONCAT_(a, b)
-#define ARENA_ORIG    CONCAT(_arena_, __LINE__)
+typedef struct {
+  Arena* arena;
+  byte* saved_cur;
+#ifdef OOM_COMMIT
+  byte* saved_end;
+#endif
+} ScratchScope;
+
+static inline void scratch_exit(ScratchScope* s) {
+  if (s->arena->cur > s->saved_cur) {
+    ASAN_POISON_MEMORY_REGION(s->saved_cur, s->arena->cur - s->saved_cur);
+  }
+  s->arena->cur = s->saved_cur;
+#ifdef OOM_COMMIT
+  if (s->arena->commit_size && s->arena->end > s->saved_end) {
+    arena_os_decommit(s->saved_end, s->arena->end - s->saved_end);
+    s->arena->end = s->saved_end;
+  }
+#endif
+}
+
+#ifdef __GNUC__
+#define __scratch_exit __attribute__((__cleanup__(scratch_exit)))
+#else
+#define __scratch_exit
+#endif
+
+#ifdef OOM_COMMIT
+#define _SCRATCH_INIT_END(a) , .saved_end = (a)->end
+#else
+#define _SCRATCH_INIT_END(a)
+#endif
 
 /**
  * Create a temporary arena scope.
@@ -239,25 +270,13 @@ static void autofree_impl(void* p) {
  *     // use temp...
  *   } // arena reset here
  */
-#define Scratch(arena)                       \
-  __arena_restore Arena* ARENA_ORIG = arena; \
-  Arena arena[] = {*ARENA_ORIG}
-
-#ifdef __GNUC__
-#define __arena_restore __attribute__((__cleanup__(arena_restore)))
-#else
-#define __arena_restore
-#endif
-
-static void arena_restore(Arena** a) {
-  ASAN_POISON_MEMORY_REGION(a[0]->cur, a[0]->end - a[0]->cur);
-#ifdef OOM_COMMIT
-  if (a[0]->commit_size) {
-    isize orig_size = a[0]->end - a[0]->beg;
-    arena_os_decommit(a[0]->end, a[0]->reserve_size - orig_size);
+#define Scratch(a)                                            \
+  Arena* CONCAT(_a_, __LINE__) = (a);                         \
+  __scratch_exit ScratchScope CONCAT(_scratch_, __LINE__) = { \
+      .arena = CONCAT(_a_, __LINE__),                         \
+      .saved_cur = CONCAT(_a_, __LINE__)->cur                 \
+      _SCRATCH_INIT_END(CONCAT(_a_, __LINE__))                \
   }
-#endif
-}
 
 /**
  * Define a dynamic array type.

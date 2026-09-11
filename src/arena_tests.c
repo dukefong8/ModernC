@@ -143,6 +143,22 @@ UTEST(arena, scratch_nested) {
   ASSERT_EQ(arena->cur, level0);
 }
 
+UTEST(arena, scratch_repairs_poison_above_stale_end) {
+#if defined(ASAN_ENABLED) && defined(OOM_COMMIT)
+  // The Scratch's committed growth dies with the discarded copy, so the outer
+  // arena's `end` is stale; the whole range must be poisoned again on exit.
+  Arena arena[] = {arena_init(NULL, GB(1))};
+  char* p;
+  {
+    Scratch(arena);
+    New(arena, char, arena->end - arena->cur, NO_INIT);  // fill the initial commit
+    p = New(arena, char, 1, NO_INIT);                    // growth -> past the stale end
+  }
+  ASSERT_TRUE(__asan_address_is_poisoned(p));
+  arena_release(arena);
+#endif
+}
+
 /* --- OOM handling --- */
 
 UTEST(arena, oom_null_returns_null) {
