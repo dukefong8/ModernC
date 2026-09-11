@@ -142,6 +142,7 @@ astr test_astr(Arena arena[static 1]) {
 typedef slice(int64_t) i64s;
 
 i64s test_slice(Arena* arena) {
+  ALOG(arena);
   {
     Scratch(arena);
     ALOG(arena);
@@ -153,6 +154,7 @@ i64s test_slice(Arena* arena) {
         break;
       }
     }
+    ALOG(arena);
   }
   ALOG(arena);
 
@@ -162,12 +164,16 @@ i64s test_slice(Arena* arena) {
   for (int i = 2; i < 9; ++i) {
     *Push(arena, &fibs) = fibs.data[i - 2] + fibs.data[i - 1];
   }
+  ALOG(arena);
   {
     Scratch(arena);
+    ALOG(arena);
     for (int i = 9; i < 11; ++i) {
       *Push(arena, &fibs) = fibs.data[i - 2] + fibs.data[i - 1];
     }
+    ALOG(arena);
   }
+  ALOG(arena);
   for (int i = 11; i < 29; ++i) {
     *Push(arena, &fibs) = fibs.data[i - 2] + fibs.data[i - 1];
   }
@@ -319,6 +325,14 @@ int main(int argc, const char* argv[]) {
   }
 
   ALOG(arena);
+  {
+    Scratch(arena);
+    ALOG(arena);
+    New(arena, char, MB(4));
+    ALOG(arena);
+  }
+  ALOG(arena);
+
   int test_pqueue(Arena arena);
   test_pqueue(*arena);
   ALOG(arena);

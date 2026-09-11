@@ -2,11 +2,12 @@
 #define DEBUG_H_
 
 #ifdef LOGGING
-#define ALOG(a)                                                                                    \
-  printf("%s:%d %s: " #a " = { cur=%p end=%p used=%td free=%td }\n", __FILE__, __LINE__, __func__, \
-         ((a)->cur), ((a)->end), (isize)((a)->cur - ((a)->beg)), (isize)((a)->end - ((a)->cur)))
+#define ALOG(a)                                                                                             \
+  printf("%s:%d %s: " #a " = { cur=%p end=%p size=%td used=%td free=%td }\n", __FILE__, __LINE__, __func__, \
+         ((a)->cur), ((a)->end), (isize)((a)->end - ((a)->beg)), (isize)((a)->cur - ((a)->beg)),            \
+         (isize)((a)->end - ((a)->cur)))
 #else
-#define ALOG(a) ((void)a)
+#define ALOG(a) ((void)(a))
 #endif
 
 #if defined(LOGGING) && !defined(__COSMOCC__) && __has_include("elf.h")

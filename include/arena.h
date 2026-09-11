@@ -416,14 +416,14 @@ ARENA_INLINE jmp_buf* arena_oom_set(Arena* arena, jmp_buf* jmpbuf) {
   arena->oom = jmpbuf;
   return jmpbuf;
 }
-#define ArenaOOM(arena, jmpbuf)                                       \
-  ({                                                                   \
-    int _oom_result = 0;                                               \
-    if (setjmp(*arena_oom_set((arena), &(jmpbuf)))) {                  \
-      (arena)->oom = NULL;                                             \
-      _oom_result = 1;                                                 \
-    }                                                                  \
-    _oom_result;                                                       \
+#define ArenaOOM(arena, jmpbuf)                       \
+  ({                                                  \
+    int _oom_result = 0;                              \
+    if (setjmp(*arena_oom_set((arena), &(jmpbuf)))) { \
+      (arena)->oom = NULL;                            \
+      _oom_result = 1;                                \
+    }                                                 \
+    _oom_result;                                      \
   })
 #else
 #define ArenaOOM(arena, jmpbuf) ((void)jmpbuf, false)

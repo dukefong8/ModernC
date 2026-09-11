@@ -1,4 +1,5 @@
 #include "arena.h"
+#include "debug.h"
 #include "utest.h"
 
 /* --- Arena init / alloc / reset / release --- */
@@ -114,14 +115,20 @@ UTEST(arena, scratch_restores_on_exit) {
 
   New(arena, int, 10);
   byte* saved = arena->cur;
+  isize saved_size = arena->end - arena->beg;
 
+  ALOG(arena);
   {
     Scratch(arena);
     New(arena, char, 512);
     // arena->cur advanced inside scratch
+    ALOG(arena);
+    ASSERT_GT(arena->cur, saved);
   }
-  // After scope exit, original arena's cur is unchanged
+  ALOG(arena);
+  // After scope exit, original arena's cur and size are unchanged
   ASSERT_EQ(arena->cur, saved);
+  ASSERT_EQ(arena->end - arena->beg, saved_size);
 }
 
 UTEST(arena, scratch_nested) {
@@ -130,17 +137,25 @@ UTEST(arena, scratch_nested) {
   Arena arena[] = {arena_init(mem, size)};
 
   byte* level0 = arena->cur;
+  isize size0 = arena->end - arena->beg;
+  ALOG(arena);
   {
     Scratch(arena);
     New(arena, char, 100);
     byte* level1 = arena->cur;
+    ALOG(arena);
     {
       Scratch(arena);
       New(arena, char, 200);
+      ALOG(arena);
+      ASSERT_GT(arena->cur, level1);
     }
+    ALOG(arena);
     ASSERT_EQ(arena->cur, level1);
   }
+  ALOG(arena);
   ASSERT_EQ(arena->cur, level0);
+  ASSERT_EQ(arena->end - arena->beg, size0);
 }
 
 /* --- OOM handling --- */
