@@ -349,6 +349,29 @@ UTEST(slice, clone_empty) {
   ASSERT_TRUE(copy.data == NULL);
 }
 
+UTEST(slice, clone_evaluates_args_once) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints s = {0};
+  for (int i = 0; i < 5; i++)
+    *Push(arena, &s) = i * 10;
+
+  int calls = 0;
+  ints full = Clone(arena, (calls++, s));
+  ASSERT_EQ(calls, 1);
+  ASSERT_EQ(full.len, 5);
+
+  calls = 0;
+  int start = 2;
+  ints rest = Clone(arena, (calls++, s), start++);
+  ASSERT_EQ(calls, 1);
+  ASSERT_EQ(start, 3);
+  ASSERT_EQ(rest.len, 3);
+  ASSERT_EQ(rest.data[0], 20);
+}
+
 /* --- Countof / size macros --- */
 
 UTEST(arena, size_macros) {
@@ -388,4 +411,21 @@ UTEST(arena, fill_to_capacity) {
 
   // Arena should be nearly full
   ASSERT_TRUE(arena->end - arena->cur < 16);
+}
+
+/* --- arena_release ownership --- */
+
+UTEST(arena, release_borrowed_buffer) {
+  // release must only free what the arena obtained itself; a caller-owned
+  // buffer (stack, static, mmap'd) is never freed here.
+  enum { size = KB(1) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  New(arena, int, 4);
+  arena_release(arena);
+
+  ASSERT_TRUE(arena->beg == NULL);
+  ASSERT_TRUE(arena->cur == NULL);
+  ASSERT_TRUE(arena->end == NULL);
 }

@@ -146,7 +146,8 @@ i64s test_slice(Arena* arena) {
     Scratch(arena);
     ALOG(arena);
     while (1) {
-      char* p = New(arena, char, GB(1), OOM_NULL);
+      // NO_INIT: p is never read, and fresh anonymous pages are already zero
+      char* p = New(arena, char, GB(1), (ArenaFlag){_NO_INIT | _OOM_NULL});
       if (!p) {
         puts("!!! OOM break !!!");
         break;
@@ -353,6 +354,9 @@ int main(int argc, const char* argv[]) {
   ALOG(arena);
 
   arena_release(arena);
+#ifndef OOM_COMMIT
+  free(default_arena_mem);  // arena_release only frees what it reserved itself
+#endif
 
   return utest_main(argc, argv);
 }

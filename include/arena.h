@@ -305,7 +305,12 @@ static void arena_restore(Arena** a) {
 #define Clone(...)                   _CloneX(__VA_ARGS__, _Clone4, _Clone3, _Clone2)(__VA_ARGS__)
 #define _CloneX(a, b, c, d, e, ...)  e
 #define _Clone2(arena, slice)        _Clone3(arena, slice, 0)
-#define _Clone3(arena, slice, start) _Clone4(arena, slice, start, slice.len - (start))
+#define _Clone3(arena, slice, start)                 \
+  ({                                                 \
+    __auto_type _cs = (slice);                       \
+    isize _cstart = (start);                         \
+    _Clone4(arena, _cs, _cstart, _cs.len - _cstart); \
+  })
 #define _Clone4(arena, slice, start, length)                                  \
   ({                                                                          \
     __auto_type _s = slice;                                                   \
@@ -365,17 +370,15 @@ ARENA_INLINE Arena arena_init(byte* buf, isize size) {
  * @brief Release arena memory back to OS.
  * @param arena Arena to release
  *
+ * Only frees memory the arena obtained itself (the arena_init(NULL, ...)
+ * reserve). A caller-supplied buffer is the caller's to free.
  * Invalidates all allocations. Arena struct is zeroed.
  */
 ARENA_INLINE void arena_release(Arena* arena) {
 #ifdef OOM_COMMIT
   if (arena->commit_size) {
     munmap(arena->beg, arena->reserve_size);
-  } else {
-    free(arena->beg);
   }
-#else
-  free(arena->beg);
 #endif
   memset(arena, 0, sizeof(Arena));
 }
@@ -757,7 +760,10 @@ static astr astr_format(Arena* arena, const char* format, ...) {
 /**
  * Convert astr to null-terminated C string.
  *
- * Pass temporary arena by value - lifetime ends at current expression.
+ * For temporary use - avoids the malloc/strdup + free dance. The arena is
+ * passed by value so the caller's cur is not advanced: the result is only
+ * valid until the next allocation from that arena, and two calls in one
+ * expression land on the same address (only the last one survives).
  *
  * Usage:
  *   printf("test: %s\n", astr_to_cstr(*arena, s));
@@ -950,7 +956,7 @@ ARENA_INLINE isize astr_find(astr s, astr needle) {
  */
 ARENA_INLINE astr astr_substr(astr s, isize pos, isize len) {
   Assert(((size_t)pos <= (size_t)s.len) & (len >= 0));
-  if (pos + len > s.len)
+  if (len > s.len - pos)
     len = s.len - pos;
   s.data += pos, s.len = len;
   return s;

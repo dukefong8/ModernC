@@ -297,3 +297,18 @@ UTEST(astr, compare_prefix_ordering) {
   ASSERT_TRUE(astr_compare(astr("ab"), astr("abc")) < 0);
   ASSERT_TRUE(astr_compare(astr("abc"), astr("ab")) > 0);
 }
+
+UTEST(astr, substr_huge_len_clamps) {
+  // `pos + len` overflows isize for a huge len, which used to skip the clamp and
+  // hand back a view with .len == INT64_MAX. Hashing it reads out of bounds.
+  astr s = astr("hello");
+  astr sub = astr_substr(s, 1, INT64_MAX);
+  ASSERT_EQ(sub.len, 4);
+  ASSERT_TRUE(sub.data == s.data + 1);
+  ASSERT_EQ(astr_hash(sub), astr_hash(astr("ello")));
+
+  // the ordinary clamp must behave exactly as before
+  ASSERT_EQ(astr_substr(s, 2, 100).len, 3);
+  ASSERT_EQ(astr_substr(s, 0, 5).len, 5);
+  ASSERT_EQ(astr_substr(s, 5, 0).len, 0);
+}
