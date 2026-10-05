@@ -162,20 +162,20 @@ i64s test_slice(Arena* arena) {
   i64s fibs = {.data = data, .len = Countof(data)};
   fibs = Clone(arena, fibs, 0, 2);
   for (int i = 2; i < 9; ++i) {
-    Push(arena, &fibs, Get(&fibs, i - 2) + Get(&fibs, i - 1));
+    Push(arena, &fibs, fibs.data[i - 2] + fibs.data[i - 1]);
   }
   ALOG(arena);
   {
     Scratch(arena);
     ALOG(arena);
     for (int i = 9; i < 11; ++i) {
-      Push(arena, &fibs, Get(&fibs, i - 2) + Get(&fibs, i - 1));
+      Push(arena, &fibs, fibs.data[i - 2] + fibs.data[i - 1]);
     }
     ALOG(arena);
   }
   ALOG(arena);
   for (int i = 11; i < 29; ++i) {
-    Push(arena, &fibs, Get(&fibs, i - 2) + Get(&fibs, i - 1));
+    Push(arena, &fibs, fibs.data[i - 2] + fibs.data[i - 1]);
   }
   ALOG(arena);
 
@@ -244,9 +244,9 @@ UTEST(slice, push_fresh) {
   Push(arena, &s, (int64_t)20);
   Push(arena, &s, (int64_t)30);
   ASSERT_EQ(s.len, 3);
-  ASSERT_EQ(Get(&s, 0), 10);
-  ASSERT_EQ(Get(&s, 1), 20);
-  ASSERT_EQ(Get(&s, 2), 30);
+  ASSERT_EQ(s.data[0], 10);
+  ASSERT_EQ(s.data[1], 20);
+  ASSERT_EQ(s.data[2], 30);
 }
 
 UTEST(slice, push_after_len_reset) {
@@ -263,7 +263,7 @@ UTEST(slice, push_after_len_reset) {
   s.len = 0;  // reuse as buffer
   Push(arena, &s, (int64_t)99);
   ASSERT_EQ(s.len, 1);
-  ASSERT_EQ(Get(&s, 0), 99);
+  ASSERT_EQ(s.data[0], 99);
   ASSERT_TRUE(s.cap > 0);
 }
 
@@ -283,10 +283,10 @@ UTEST(slice, push_after_cap_reset) {
   s.cap = 0;
   Push(arena, &s, (int64_t)4);
   ASSERT_EQ(s.len, 4);
-  ASSERT_EQ(Get(&s, 0), 1);
-  ASSERT_EQ(Get(&s, 1), 2);
-  ASSERT_EQ(Get(&s, 2), 3);
-  ASSERT_EQ(Get(&s, 3), 4);
+  ASSERT_EQ(s.data[0], 1);
+  ASSERT_EQ(s.data[1], 2);
+  ASSERT_EQ(s.data[2], 3);
+  ASSERT_EQ(s.data[3], 4);
   ASSERT_TRUE(s.data != old_data);  // must have new backing storage
   ASSERT_TRUE(s.cap >= s.len);
 }
@@ -303,12 +303,12 @@ UTEST(slice, clone_and_push) {
 
   i64s copy = Clone(arena, s, 0, 2);
   ASSERT_EQ(copy.len, 2);
-  ASSERT_EQ(Get(&copy, 0), 1);
-  ASSERT_EQ(Get(&copy, 1), 2);
+  ASSERT_EQ(copy.data[0], 1);
+  ASSERT_EQ(copy.data[1], 2);
 
   Push(arena, &copy, (int64_t)42);
   ASSERT_EQ(copy.len, 3);
-  ASSERT_EQ(Get(&copy, 2), 42);
+  ASSERT_EQ(copy.data[2], 42);
 }
 
 int main(int argc, const char* argv[]) {
@@ -342,7 +342,7 @@ int main(int argc, const char* argv[]) {
   Push(arena, &fibs, (int64_t)0);
   puts(">>>fibs");
   for (int i = 0; i < fibs.len; ++i)
-    printf("%lld,", (long long)Get(&fibs, i));
+    printf("%lld,", (long long)fibs.data[i]);
   puts("<<<fibs");
 
   astr s = test_astr(arena);

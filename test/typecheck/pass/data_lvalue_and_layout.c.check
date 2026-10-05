@@ -1,4 +1,4 @@
-// Get is an assignable element accessor (sugar for s->data[i]); Slice(T)
+// s->data[i] is an assignable element accessor; Slice(T)
 // stays byte-identical to the erased SliceInternal layout for any T.
 #include "arena.h"
 
@@ -17,9 +17,9 @@ _Static_assert(offsetof(ints, len) == offsetof(SliceInternal, len), "len offset"
 _Static_assert(offsetof(ints, cap) == offsetof(SliceInternal, cap), "cap offset");
 
 void use(Arena* arena, ints* s, bigs* bs) {
-  Get(s, 0) = 5;
-  Get(s, 0) += 1;
-  int* addr = &Get(s, 0);
+  s->data[0] = 5;
+  s->data[0] += 1;
+  int* addr = &s->data[0];
   (void)addr;
   (void)bs;
   (void)arena;

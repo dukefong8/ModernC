@@ -56,14 +56,15 @@ OOM policy is per-call and three-way: default is `longjmp` to the `jmp_buf` regi
 
 The API surface built on top: `New(arena, T[, n][, NO_INIT | OOM_NULL | src_ptr])` (`_Generic`
 selects copy-init when the 4th arg is a pointer), `Scratch(arena)` for scope-restored temporaries,
-`Slice(T)` + `Push`/`Get`/`Clone`, and the `astr` length-prefixed string family (`S(s)` for
+`Slice(T)` + `Push`/`Reserve`/`Clone`, and the `astr` length-prefixed string family (`S(s)` for
 printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
 
 `Push(arena, &s, v)` is the only way to append: it stores the value it is given, so call sites
 spell the element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
 (`-Wpointer-type-mismatch`), not a conversion. An element whose contents are produced rather than
 known up front is pushed as a placeholder and filled through the returned pointer; `New`
-allocates a standalone object, it does not append. `Get(&s, i)` is sugar for `s.data[i]`.
+allocates a standalone object, it does not append. `Reserve(arena, &s, n)` grows capacity up front
+so a batch of pushes never steps it. Elements are read and written through `s.data[i]` directly.
 
 `Slice(T)` is an untagged struct (`T *data`, `len`, `cap`): `Slice(struct Point)` and
 `Slice(const char*)` work as written, and repeat expansions don't collide on a tag;
@@ -73,7 +74,7 @@ rather than nominal: `Push` accepts any struct shaped like this one, and the ele
 whatever `data` points at. `Push`'s `(1 ? &val : s->data)` ternary guard is the compile-time type
 check, and it is strict about types.
 
-The layout must stay identical to `SliceInternal`, which `arena_slice_grow` memcpys —
+The layout must stay identical to `SliceInternal`, which `arena_slice_reserve` memcpys —
 `arena_tests.c` static-asserts the offsets, and `make typecheck` holds the compile-time fixtures.
 
 **Allocation order is semantically load-bearing.** Several "optimizations" are really contracts
