@@ -1,0 +1,23 @@
+// Push accepts exactly-matching element types -- scalars, structs by
+// value, pointers -- and yields the new element's address.
+#include "arena.h"
+
+struct A {
+  int v;
+};
+
+typedef Slice(struct A) as;
+typedef Slice(int) ints;
+typedef Slice(const char*) strs;
+
+void use(Arena* arena, as* xs, ints* is, strs* ss) {
+  struct A a = {7};
+  struct A* p = Push(arena, xs, a);
+  p->v = a.v;
+
+  int* q = Push(arena, is, 42);
+  *q += 1;
+
+  const char* lit = "hi";
+  Push(arena, ss, lit);
+}

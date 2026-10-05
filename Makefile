@@ -68,3 +68,9 @@ deps:
 .PHONY: watch
 watch:
 	find . -name '*.c' -o -name '*.h' | entr -cc clang $(WARN) $(CPPFLAGS) -fsyntax-only -ferror-limit=1 -fmacro-backtrace-limit=1 /_
+
+# Compile-time checks: fixtures that must compile, and fixtures that must be
+# rejected with a specific diagnostic (see test/typecheck.sh).
+.PHONY: typecheck
+typecheck:
+	./test/typecheck.sh

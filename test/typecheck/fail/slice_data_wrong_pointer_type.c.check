@@ -1,0 +1,9 @@
+// EXPECT: incompatible pointer type
+// data is T*, so the compiler checks direct field writes.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+void use(ints* s, char* bytes) {
+  s->data = bytes;
+}

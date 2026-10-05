@@ -1,0 +1,26 @@
+// Get is an assignable element accessor (sugar for s->data[i]); Slice(T)
+// stays byte-identical to the erased SliceInternal layout for any T.
+#include "arena.h"
+
+struct Big {
+  double d[3];
+};
+
+typedef Slice(int) ints;
+typedef Slice(struct Big) bigs;
+
+_Static_assert(sizeof(ints) == sizeof(SliceInternal), "no overhead");
+_Static_assert(sizeof(bigs) == sizeof(SliceInternal), "no overhead");
+_Static_assert(alignof(ints) == alignof(SliceInternal), "align must match");
+_Static_assert(offsetof(ints, data) == offsetof(SliceInternal, data), "data offset");
+_Static_assert(offsetof(ints, len) == offsetof(SliceInternal, len), "len offset");
+_Static_assert(offsetof(ints, cap) == offsetof(SliceInternal, cap), "cap offset");
+
+void use(Arena* arena, ints* s, bigs* bs) {
+  Get(s, 0) = 5;
+  Get(s, 0) += 1;
+  int* addr = &Get(s, 0);
+  (void)addr;
+  (void)bs;
+  (void)arena;
+}

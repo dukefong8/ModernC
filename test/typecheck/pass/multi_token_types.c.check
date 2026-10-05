@@ -1,0 +1,23 @@
+// Element types made of several tokens, spelled as written.
+#include "arena.h"
+
+struct Point {
+  int x, y;
+};
+
+typedef Slice(struct Point) points;
+typedef Slice(unsigned int) uints;
+typedef Slice(const char*) strs;
+typedef Slice(long long) llongs;
+
+void use(Arena* arena, points* ps, uints* us, strs* ss, llongs* ls) {
+  Push(arena, ps, ((struct Point){1, 2}));
+  Push(arena, us, 3u);
+  Push(arena, ls, 4ll);
+
+  const char* hello = "hello";
+  Push(arena, ss, hello);
+
+  Push(arena, us, 5u);
+  Get(ps, 0).x = 1;
+}

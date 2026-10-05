@@ -1,0 +1,9 @@
+// EXPECT: not a structure
+// Push needs a pointer to something slice-shaped. Slice(T) is an untagged
+// struct, so the check is structural: any struct with data/len/cap passes, a
+// bare pointer does not.
+#include "arena.h"
+
+void use(Arena* arena, int* raw) {
+  Push(arena, raw, 1);
+}

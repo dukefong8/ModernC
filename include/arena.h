@@ -5,7 +5,7 @@
  * Provides bump-pointer allocation in a contiguous memory region with:
  * - Fast O(1) allocation with minimal overhead
  * - Optional zero-initialization and lazy commit (mmap)
- * - String utilities (astr) and dynamic arrays (slice)
+ * - String utilities (astr) and dynamic arrays (Slice)
  * - OOM handling via setjmp/longjmp or NULL return
  *
  * @see https://nullprogram.com/blog/2023/09/27/
@@ -260,40 +260,120 @@ static void arena_restore(Arena** a) {
 }
 
 /**
+ * Type-erased slice layout (see Slice).
+ *
+ * The contract between Slice(T) and the growth path: first a pointer, then
+ * len and cap. arena_tests.c static asserts the offsets so the memcpy in
+ * arena_slice_grow cannot drift.
+ */
+typedef struct SliceInternal {
+  void* data;
+  isize len;
+  isize cap;
+} SliceInternal;
+
+/**
  * Define a dynamic array type.
  *
- * Usage:
- *   typedef slice(long) i64s;
+ * An untagged struct: any C type works, including multi-token ones, and
+ * identical expansions in one translation unit do not collide on a struct tag:
+ *
+ *   typedef Slice(long) i64s;
+ *   typedef Slice(struct Point) points;
+ *   typedef Slice(const char*) strs;
+ *
+ * data is typed, so elements are directly reachable (s.data[i]); Get() is
+ * optional sugar over the same expression.
+ *
+ * Each expansion is a distinct anonymous type, so typedef it to pass a slice
+ * across function boundaries or to embed it in a struct. Being untagged, the
+ * type is structural rather than nominal: Push accepts any struct
+ * shaped like this one, and the element type is whatever data points at.
  */
-#define slice(T)     \
-  struct slice_##T { \
-    T* data;         \
-    isize len;       \
-    isize cap;       \
+#define Slice(T) \
+  struct {       \
+    T* data;     \
+    isize len;   \
+    isize cap;   \
   }
 
 /**
- * Append an element to a slice, growing if needed.
+ * Validity checks for a slice about to be pushed (internal). Clone asserts
+ * only what it dereferences -- data, and only when it copies.
  *
- * Returns pointer to the new uninitialized element.
- *
- * Usage:
- *   i64s fibs = {0};
- *   *Push(arena, &fibs) = 2;
- *   *Push(arena, &fibs) = 3;
+ * Accepts every state the API produces: zeroed `{0}`, arena-backed (data set,
+ * len <= cap), and calling-code-backed or detached (`cap == 0`, any len --
+ * data may point outside the arena or be stale, and the growth path adopts it).
+ * Rejects the states that would make Push or Clone derive a pointer from a
+ * slice it cannot trust: negative len/cap, len > cap with cap != 0, and a NULL
+ * data pointer with either len or cap non-zero. Structurally slice-shaped
+ * types are accepted (see Slice(T)), but their layout must match
+ * SliceInternal, which the static asserts above require at compile time.
  */
-#define Push(arena, slice)                                                            \
+#define _SliceAssertValid(s)                                                                     \
+  do {                                                                                           \
+    _Static_assert(sizeof(*(s)) == sizeof(SliceInternal),                                        \
+                   "Slice(T) must be layout-compatible with SliceInternal");                     \
+    _Static_assert(offsetof(__typeof__(*(s)), len) == offsetof(SliceInternal, len) &&            \
+                       offsetof(__typeof__(*(s)), cap) == offsetof(SliceInternal, cap),          \
+                   "Slice(T) must order data/len/cap like SliceInternal");                       \
+    Assert((s)->len >= 0 && "slice.len must be non-negative");                                   \
+    Assert((s)->cap >= 0 && "slice.cap must be non-negative");                                   \
+    Assert((s)->len <= (s)->cap || (s)->cap == 0);                                               \
+    Assert(((s)->data != NULL || ((s)->len == 0 && (s)->cap == 0)) && "Invalid slice: no data"); \
+  } while (0)
+
+/**
+ * Append a value to a slice, growing if needed, checked at compile time.
+ *
+ * The ternary guard below is the type check: its second branch is the slice's
+ * typed data pointer, so the two branches must be compatible pointer types and
+ * a mismatched value is diagnosed by the compiler (-Wpointer-type-mismatch,
+ * fatal under -Werror). The value is materialized before the slice is touched,
+ * so `Push(arena, &s, f(&s))` is sequenced.
+ *
+ *   Push(arena, &fibs, (int64_t)2);
+ *   Push(arena, &points, ((struct Point){1, 2}));
+ *
+ * Push stores the value it is given. An element that is *produced* rather than
+ * known up front -- read(2), a decoder -- is pushed as a placeholder and filled
+ * through the returned pointer:
+ *
+ *   Chunk* c = Push(arena, &cs, (Chunk){0});
+ *   c->n += read(fd, c->data + c->n, sizeof c->data - c->n);
+ *
+ * Finish filling before the next Push, and reach the element by index (Get)
+ * afterwards: growth can move the storage, though the bytes ride along.
+ *
+ * Strict: mismatched types are diagnosed (-Wpointer-type-mismatch; -Werror
+ * makes it fatal, as `make typecheck` does) rather than converted, a string
+ * literal into Slice(const char*) needs a cast -- Push(arena, &strs,
+ * (const char*)"hi") -- and a compound literal needs its own parentheses, as
+ * above, so the commas stay inside one macro argument.
+ *
+ * Returns pointer to the new element.
+ */
+#define Push(arena, slice, val)                                                       \
   ({                                                                                  \
-    __auto_type _s = slice;                                                           \
-    Assert(_s->len >= 0 && "slice.len must be non-negative");                         \
-    Assert(_s->cap >= 0 && "slice.cap must be non-negative");                         \
-    Assert(!(_s->data == NULL && _s->len > 0) && "Invalid slice");                    \
-    Assert(_s->len <= _s->cap || _s->cap == 0);                                       \
+    __auto_type _s = (slice);                                                         \
+    __auto_type _v = (val);                                                           \
+    (void)(1 ? &_v : _s->data);                                                       \
+    _SliceAssertValid(_s);                                                            \
     if (_s->len >= _s->cap) {                                                         \
       arena_slice_grow(arena, _s, sizeof(*_s->data), alignof(__typeof__(*_s->data))); \
     }                                                                                 \
-    _s->data + _s->len++;                                                             \
+    __auto_type _p = _s->data + _s->len++;                                            \
+    *_p = _v;                                                                         \
+    _p;                                                                               \
   })
+
+/**
+ * Element access as an lvalue, sugar for `(s)->data[i]`.
+ *
+ *   Get(&fibs, 0) = 42;
+ *   Get(&fibs, i) += 1;
+ */
+#define Get(s, i) ((s)->data[i])
 
 /**
  * Clone a slice (or subslice) into arena memory.
@@ -302,27 +382,28 @@ static void arena_restore(Arena** a) {
  *   fibs = Clone(arena, fibs);           // Full copy
  *   fibs = Clone(arena, fibs, 0, 2);     // First 2 elements
  */
-#define Clone(...)                   _CloneX(__VA_ARGS__, _Clone4, _Clone3, _Clone2)(__VA_ARGS__)
-#define _CloneX(a, b, c, d, e, ...)  e
-#define _Clone2(arena, slice)        _Clone3(arena, slice, 0)
+#define Clone(...)                  _CloneX(__VA_ARGS__, _Clone4, _Clone3, _Clone2)(__VA_ARGS__)
+#define _CloneX(a, b, c, d, e, ...) e
+#define _Clone2(arena, slice)       _Clone3(arena, slice, 0)
 #define _Clone3(arena, slice, start)                 \
   ({                                                 \
     __auto_type _cs = (slice);                       \
     isize _cstart = (start);                         \
     _Clone4(arena, _cs, _cstart, _cs.len - _cstart); \
   })
-#define _Clone4(arena, slice, start, length)                                  \
-  ({                                                                          \
-    __auto_type _s = slice;                                                   \
-    isize _start = start;                                                     \
-    isize _len = length;                                                      \
-    Assert(_start >= 0 && _len >= 0 && _start <= _s.len - _len);              \
-    if (_len > 0) {                                                           \
-      _s.data = New(arena, __typeof__(_s.data[0]), _len, (_s.data + _start)); \
-    } else                                                                    \
-      _s.data = NULL;                                                         \
-    _s.cap = _s.len = _len;                                                   \
-    _s;                                                                       \
+#define _Clone4(arena, slice, start, length)                                \
+  ({                                                                        \
+    __auto_type _s = slice;                                                 \
+    isize _start = start;                                                   \
+    isize _len = length;                                                    \
+    Assert((_s.data != NULL || _len == 0) && "Clone needs data to copy");   \
+    Assert(_start >= 0 && _len >= 0 && _start <= _s.len - _len);            \
+    if (_len > 0) {                                                         \
+      _s.data = New(arena, __typeof__(*_s.data), _len, (_s.data + _start)); \
+    } else                                                                  \
+      _s.data = NULL;                                                       \
+    _s.cap = _s.len = _len;                                                 \
+    _s;                                                                     \
   })
 
 /**
@@ -553,13 +634,14 @@ ARENA_INLINE void* arena_alloc_init(Arena* arena, isize size, isize align, isize
  *
  * Attempts in-place growth when possible, otherwise reallocates.
  * Called automatically by Push() macro.
+ *
+ * The slice pointer is type-erased (any Slice(T)*); the memcpy is the safe
+ * boundary, and SliceInternal documents the layout it must have. The element
+ * size/alignment come from the caller's element type, so the erased copy here
+ * cannot pick a wrong size.
  */
 ARENA_INLINE void arena_slice_grow(Arena* arena, void* slice, isize size, isize align) {
-  struct {
-    void* data;
-    isize len;
-    isize cap;
-  } tmp;
+  SliceInternal tmp;
   memcpy(&tmp, slice, sizeof(tmp));
 
   enum { GROW = 16 };

@@ -1,0 +1,17 @@
+// EXPECT: pointer type mismatch
+// Pushing a struct B into a Slice(struct A).
+#include "arena.h"
+
+struct A {
+  int a;
+};
+
+struct B {
+  int b;
+};
+
+typedef Slice(struct A) as;
+
+void use(Arena* arena, as* xs, struct B b) {
+  Push(arena, xs, b);
+}

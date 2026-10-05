@@ -1,0 +1,14 @@
+// Identical expansions of the same element type at file scope: each is a
+// distinct anonymous type, and they do not collide.
+#include "arena.h"
+
+typedef Slice(int) ints_a;
+typedef Slice(int) ints_b;
+typedef Slice(int) ints_c;
+
+void use(Arena* arena, ints_a* a, ints_b* b, ints_c* c) {
+  Push(arena, a, 1);
+  Push(arena, b, 2);
+  Push(arena, c, 3);
+  Get(a, 0) = Get(b, 0) + Get(c, 0);
+}

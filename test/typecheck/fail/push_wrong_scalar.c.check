@@ -1,0 +1,10 @@
+// EXPECT: pointer type mismatch
+// Pushing a double into Slice(int): the ternary guard rejects it. Push does
+// not convert implicitly.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+void use(Arena* arena, ints* s) {
+  Push(arena, s, 3.5);
+}

@@ -17,6 +17,7 @@ make release    # -O2 -g -DNDEBUG -DOOM_COMMIT
 make clean      # rm -rf build/
 make deps       # re-download all vendored headers into include/ (network; clobbers local edits)
 make watch      # requires `entr`: syntax-only recheck of every .c/.h on change
+make typecheck  # compile-only fixtures: which arena.h slice misuses must fail to compile
 ```
 
 Run tests by running the binary — it executes the demos in `main()` first, then every `UTEST`
@@ -55,8 +56,25 @@ OOM policy is per-call and three-way: default is `longjmp` to the `jmp_buf` regi
 
 The API surface built on top: `New(arena, T[, n][, NO_INIT | OOM_NULL | src_ptr])` (`_Generic`
 selects copy-init when the 4th arg is a pointer), `Scratch(arena)` for scope-restored temporaries,
-`slice(T)` + `Push`/`Clone`, and the `astr` length-prefixed string family (`S(s)` for printf,
-`astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
+`Slice(T)` + `Push`/`Get`/`Clone`, and the `astr` length-prefixed string family (`S(s)` for
+printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
+
+`Push(arena, &s, v)` is the only way to append: it stores the value it is given, so call sites
+spell the element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
+(`-Wpointer-type-mismatch`), not a conversion. An element whose contents are produced rather than
+known up front is pushed as a placeholder and filled through the returned pointer; `New`
+allocates a standalone object, it does not append. `Get(&s, i)` is sugar for `s.data[i]`.
+
+`Slice(T)` is an untagged struct (`T *data`, `len`, `cap`): `Slice(struct Point)` and
+`Slice(const char*)` work as written, and repeat expansions don't collide on a tag;
+`data` stays typed, so `s.data[i]` is checked element access. Each expansion is a distinct
+anonymous type (typedef to pass one across a function boundary), and the type is structural
+rather than nominal: `Push` accepts any struct shaped like this one, and the element type is
+whatever `data` points at. `Push`'s `(1 ? &val : s->data)` ternary guard is the compile-time type
+check, and it is strict about types.
+
+The layout must stay identical to `SliceInternal`, which `arena_slice_grow` memcpys —
+`arena_tests.c` static-asserts the offsets, and `make typecheck` holds the compile-time fixtures.
 
 **Allocation order is semantically load-bearing.** Several "optimizations" are really contracts
 with the caller: `arena_free` only reclaims when the pointer is at the bump tip; `Push` grows in
@@ -80,6 +98,10 @@ installs the `ArenaOOM` longjmp handler for it, runs the demos, then defers to `
 Tests are colocated with what they test rather than in a separate tree — `src/arena_tests.c`,
 `src/astr_tests.c`, and `UTEST` blocks inline in `demo.c`, `adt.h`, and `main.c`. Adding a test
 file or block requires no registration.
+
+The one exception is `test/typecheck*`, which holds what a runtime suite cannot: fixtures that
+must (or must not) compile. They deliberately use a non-`.c` extension so `SRC`'s `find` never
+builds them; `make typecheck` runs them.
 
 The remaining `src/` files are self-contained demos of a style, each showing how a differently
 shaped library plugs into the arena: `adt.h` (datatype99 `match`/`of` over an arena-allocated
