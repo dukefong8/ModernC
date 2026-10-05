@@ -19,5 +19,5 @@ void use(Arena* arena, points* ps, uints* us, strs* ss, llongs* ls) {
   Push(arena, ss, hello);
 
   Push(arena, us, 5u);
-  Get(ps, 0).x = 1;
+  ps->data[0].x = 1;
 }

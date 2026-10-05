@@ -10,5 +10,5 @@ void use(Arena* arena, ints_a* a, ints_b* b, ints_c* c) {
   Push(arena, a, 1);
   Push(arena, b, 2);
   Push(arena, c, 3);
-  Get(a, 0) = Get(b, 0) + Get(c, 0);
+  a->data[0] = b->data[0] + c->data[0];
 }

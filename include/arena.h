@@ -264,7 +264,7 @@ static void arena_restore(Arena** a) {
  *
  * The contract between Slice(T) and the growth path: first a pointer, then
  * len and cap. arena_tests.c static asserts the offsets so the memcpy in
- * arena_slice_grow cannot drift.
+ * arena_slice_reserve cannot drift.
  */
 typedef struct SliceInternal {
   void* data;
@@ -282,8 +282,8 @@ typedef struct SliceInternal {
  *   typedef Slice(struct Point) points;
  *   typedef Slice(const char*) strs;
  *
- * data is typed, so elements are directly reachable (s.data[i]); Get() is
- * optional sugar over the same expression.
+ * data is typed, so elements are directly reachable and assignable
+ * (s.data[i]).
  *
  * Each expansion is a distinct anonymous type, so typedef it to pass a slice
  * across function boundaries or to embed it in a struct. Being untagged, the
@@ -298,68 +298,49 @@ typedef struct SliceInternal {
   }
 
 /**
- * Validity checks for a slice about to be pushed (internal). Clone asserts
- * only what it dereferences -- data, and only when it copies.
- *
- * Accepts every state the API produces: zeroed `{0}`, arena-backed (data set,
- * len <= cap), and calling-code-backed or detached (`cap == 0`, any len --
- * data may point outside the arena or be stale, and the growth path adopts it).
- * Rejects the states that would make Push or Clone derive a pointer from a
- * slice it cannot trust: negative len/cap, len > cap with cap != 0, and a NULL
- * data pointer with either len or cap non-zero. Structurally slice-shaped
- * types are accepted (see Slice(T)), but their layout must match
- * SliceInternal, which the static asserts above require at compile time.
+ * Compile-time layout checks only.
+ * Always active to guarantee structural compatibility with SliceInternal.
  */
-#define _SliceAssertValid(s)                                                                     \
+#define _SliceAssertStatic(s)                                                           \
+  do {                                                                                  \
+    _Static_assert(sizeof(*(s)) == sizeof(SliceInternal),                               \
+                   "Slice(T) must be layout-compatible with SliceInternal");            \
+    _Static_assert(offsetof(__typeof__(*(s)), len) == offsetof(SliceInternal, len) &&   \
+                       offsetof(__typeof__(*(s)), cap) == offsetof(SliceInternal, cap), \
+                   "Slice(T) must order data/len/cap like SliceInternal");              \
+  } while (0)
+
+/**
+ * Unconditional runtime state validation.
+ */
+#define _SliceAssertRuntime(s)                                                                   \
   do {                                                                                           \
-    _Static_assert(sizeof(*(s)) == sizeof(SliceInternal),                                        \
-                   "Slice(T) must be layout-compatible with SliceInternal");                     \
-    _Static_assert(offsetof(__typeof__(*(s)), len) == offsetof(SliceInternal, len) &&            \
-                       offsetof(__typeof__(*(s)), cap) == offsetof(SliceInternal, cap),          \
-                   "Slice(T) must order data/len/cap like SliceInternal");                       \
     Assert((s)->len >= 0 && "slice.len must be non-negative");                                   \
-    Assert((s)->cap >= 0 && "slice.cap must be non-negative");                                   \
-    Assert((s)->len <= (s)->cap || (s)->cap == 0);                                               \
+    Assert(((s)->len <= (s)->cap || (s)->cap == 0) && "slice.len must not exceed cap");          \
     Assert(((s)->data != NULL || ((s)->len == 0 && (s)->cap == 0)) && "Invalid slice: no data"); \
   } while (0)
 
 /**
- * Append a value to a slice, growing if needed, checked at compile time.
- *
- * The ternary guard below is the type check: its second branch is the slice's
- * typed data pointer, so the two branches must be compatible pointer types and
- * a mismatched value is diagnosed by the compiler (-Wpointer-type-mismatch,
- * fatal under -Werror). The value is materialized before the slice is touched,
- * so `Push(arena, &s, f(&s))` is sequenced.
- *
- *   Push(arena, &fibs, (int64_t)2);
- *   Push(arena, &points, ((struct Point){1, 2}));
- *
- * Push stores the value it is given. An element that is *produced* rather than
- * known up front -- read(2), a decoder -- is pushed as a placeholder and filled
- * through the returned pointer:
- *
- *   Chunk* c = Push(arena, &cs, (Chunk){0});
- *   c->n += read(fd, c->data + c->n, sizeof c->data - c->n);
- *
- * Finish filling before the next Push, and reach the element by index (Get)
- * afterwards: growth can move the storage, though the bytes ride along.
- *
- * Strict: mismatched types are diagnosed (-Wpointer-type-mismatch; -Werror
- * makes it fatal, as `make typecheck` does) rather than converted, a string
- * literal into Slice(const char*) needs a cast -- Push(arena, &strs,
- * (const char*)"hi") -- and a compound literal needs its own parentheses, as
- * above, so the commas stay inside one macro argument.
- *
- * Returns pointer to the new element.
+ * Conditional runtime state validation for debug builds.
+ */
+#ifndef NDEBUG
+#define _SliceAssertRuntimeDebug(s) _SliceAssertRuntime(s)
+#else
+#define _SliceAssertRuntimeDebug(s) (void)0
+#endif
+
+/**
+ * Append a value to a slice.
+ * Includes runtime checks in debug builds (#ifndef NDEBUG); stripped in release builds.
  */
 #define Push(arena, slice, val)                                                       \
   ({                                                                                  \
     __auto_type _s = (slice);                                                         \
     __auto_type _v = (val);                                                           \
     (void)(1 ? &_v : _s->data);                                                       \
-    _SliceAssertValid(_s);                                                            \
-    if (_s->len >= _s->cap) {                                                         \
+    _SliceAssertStatic(_s);                                                           \
+    _SliceAssertRuntimeDebug(_s);                                                     \
+    if (ARENA_UNLIKELY(_s->len >= _s->cap)) {                                         \
       arena_slice_grow(arena, _s, sizeof(*_s->data), alignof(__typeof__(*_s->data))); \
     }                                                                                 \
     __auto_type _p = _s->data + _s->len++;                                            \
@@ -368,12 +349,17 @@ typedef struct SliceInternal {
   })
 
 /**
- * Element access as an lvalue, sugar for `(s)->data[i]`.
- *
- *   Get(&fibs, 0) = 42;
- *   Get(&fibs, i) += 1;
+ * Grow a slice's arena capacity to at least min_cap elements.
+ * Includes runtime checks ALWAYS (even in release builds).
  */
-#define Get(s, i) ((s)->data[i])
+#define Reserve(arena, slice, min_cap)                                                                 \
+  ({                                                                                                   \
+    __auto_type _rsv = (slice);                                                                        \
+    isize _rsv_cap = (min_cap);                                                                        \
+    _SliceAssertStatic(_rsv);                                                                          \
+    _SliceAssertRuntime(_rsv);                                                                         \
+    arena_slice_reserve(arena, _rsv, sizeof(*_rsv->data), alignof(__typeof__(*_rsv->data)), _rsv_cap); \
+  })
 
 /**
  * Clone a slice (or subslice) into arena memory.
@@ -626,19 +612,64 @@ ARENA_INLINE void* arena_alloc_init(Arena* arena, isize size, isize align, isize
 }
 
 /**
- * @brief Grow a slice's capacity.
+ * @brief Grow a slice's capacity to at least min_cap.
  * @param arena Arena to allocate from
  * @param slice Pointer to slice struct
  * @param size Size per element
  * @param align Alignment requirement
+ * @param min_cap Capacity to reach; existing elements (len) are preserved
  *
- * Attempts in-place growth when possible, otherwise reallocates.
- * Called automatically by Push() macro.
+ * Does nothing when the slice already has capacity. A caller-backed slice
+ * (cap == 0) counts its len elements as capacity, so it is only adopted into
+ * the arena once min_cap exceeds len. Growth is in place when the slice sits
+ * at the arena tip, otherwise the elements move to fresh storage.
  *
  * The slice pointer is type-erased (any Slice(T)*); the memcpy is the safe
  * boundary, and SliceInternal documents the layout it must have. The element
  * size/alignment come from the caller's element type, so the erased copy here
  * cannot pick a wrong size.
+ */
+// True when a slice's storage ends exactly at the arena's bump pointer, so its
+// capacity can be extended without moving anything.
+ARENA_INLINE bool arena_at_tip(const Arena* arena, const void* data, isize size, isize cap) {
+  return (uintptr_t)data == (uintptr_t)arena->cur - size * cap;
+}
+
+ARENA_INLINE void arena_slice_reserve(Arena* arena, void* slice, isize size, isize align, isize min_cap) {
+  SliceInternal tmp;
+  memcpy(&tmp, slice, sizeof(tmp));
+
+  Assert(min_cap >= 0 && "reserve size must be non-negative");
+
+  // A caller-backed slice really holds len elements, so len is the capacity we
+  // may claim for it before adopting.
+  if (Max(tmp.cap, tmp.len) >= min_cap)
+    return;
+
+  if (tmp.cap > 0 && ARENA_LIKELY(arena_at_tip(arena, tmp.data, size, tmp.cap))) {
+    // At the arena tip: extend in place. align 1 keeps the extension adjacent.
+    arena_alloc(arena, size, 1, min_cap - tmp.cap, NO_INIT);
+  } else {
+    // Adopt caller memory, or move off-tip storage, into a fresh block
+    void* ptr = arena_alloc(arena, size, align, min_cap, NO_INIT);
+    tmp.data = tmp.len == 0 ? ptr : memmove(ptr, tmp.data, size * tmp.len);
+  }
+  tmp.cap = min_cap;
+
+  memcpy(slice, &tmp, sizeof(tmp));
+}
+
+/**
+ * @brief Grow a slice's capacity by one step of the growth policy.
+ * @param arena Arena to allocate from
+ * @param slice Pointer to slice struct
+ * @param size Size per element
+ * @param align Alignment requirement
+ *
+ * Called automatically by Push() macro: +GROW elements when the slice is at
+ * the arena tip (memory-tight, and free to extend in place), otherwise
+ * cap + Max(cap / 2, GROW) -- at least half again as much, so the move is
+ * amortized.
  */
 ARENA_INLINE void arena_slice_grow(Arena* arena, void* slice, isize size, isize align) {
   SliceInternal tmp;
@@ -646,23 +677,15 @@ ARENA_INLINE void arena_slice_grow(Arena* arena, void* slice, isize size, isize 
 
   enum { GROW = 16 };
 
-  if (tmp.cap == 0) {
-    // Move slice from stack to arena
-    tmp.cap = tmp.len + GROW;
-    void* ptr = arena_alloc(arena, size, align, tmp.cap, NO_INIT);
-    tmp.data = tmp.len == 0 ? ptr : memmove(ptr, tmp.data, size * tmp.len);
-  } else if (ARENA_LIKELY((uintptr_t)tmp.data == (uintptr_t)arena->cur - size * tmp.cap)) {
-    // Slice is at arena tip - grow in place
-    tmp.cap += GROW;
-    arena_alloc(arena, size, 1, GROW, NO_INIT);
-  } else {
-    // Slice is not at tip - must reallocate
-    tmp.cap += Max(tmp.cap / 2, GROW);
-    void* ptr = arena_alloc(arena, size, align, tmp.cap, NO_INIT);
-    tmp.data = memmove(ptr, tmp.data, size * tmp.len);
-  }
+  isize min_cap;
+  if (tmp.cap == 0)
+    min_cap = tmp.len + GROW;
+  else if (ARENA_LIKELY(arena_at_tip(arena, tmp.data, size, tmp.cap)))
+    min_cap = tmp.cap + GROW;
+  else
+    min_cap = tmp.cap + Max(tmp.cap / 2, GROW);
 
-  memcpy(slice, &tmp, sizeof(tmp));
+  arena_slice_reserve(arena, slice, size, align, min_cap);
 }
 
 /**
