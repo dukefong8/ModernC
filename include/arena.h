@@ -330,6 +330,20 @@ typedef struct SliceInternal {
 #endif
 
 /**
+ * Debug-only spare-capacity check for the unchecked append.
+ *
+ * PushUnchecked runs no bounds check of its own, so in debug builds this
+ * assert is the only guard against writing past the slice's block; in release
+ * the caller owns the bound.
+ */
+#ifndef NDEBUG
+#define _SliceAssertSpareDebug(s) \
+  Assert((s)->len < (s)->cap && "PushUnchecked needs spare capacity: Reserve first, or use Push")
+#else
+#define _SliceAssertSpareDebug(s) (void)0
+#endif
+
+/**
  * Append a value to a slice.
  * Includes runtime checks in debug builds (#ifndef NDEBUG); stripped in release builds.
  */
@@ -349,8 +363,50 @@ typedef struct SliceInternal {
   })
 
 /**
+ * Append a value to a slice that has spare capacity, unchecked.
+ *
+ * Push without the bounds check: the caller vouches that the slice has room
+ * (s->len < s->cap), and there is no arena argument because it never
+ * allocates. This is the inner loop of a batch after Reserve, or a fill of a
+ * slice already backed into a block larger than its length:
+ *
+ *   Reserve(arena, &s, s.len + n);
+ *   for (isize i = 0; i < n; i++)
+ *     PushUnchecked(&s, (int64_t)i);
+ *
+ * The s.len + n form covers every state: a fresh slice (len is 0), a
+ * partially filled one, and a caller-backed slice (cap == 0), which only a
+ * Reserve above len adopts into the arena. Debug builds trap when the room
+ * runs out; release builds are unchecked, so an overrun writes over whatever
+ * follows the slice's block -- the caller owns the bound.
+ *
+ * Same value contract as Push: stores the value it is given with the same
+ * strict type check, evaluated once and before the slice is touched, and
+ * returns the new element.
+ */
+#define PushUnchecked(slice, val)          \
+  ({                                       \
+    __auto_type _s = (slice);              \
+    __auto_type _v = (val);                \
+    (void)(1 ? &_v : _s->data);            \
+    _SliceAssertStatic(_s);                \
+    _SliceAssertRuntimeDebug(_s);          \
+    _SliceAssertSpareDebug(_s);            \
+    __auto_type _p = _s->data + _s->len++; \
+    *_p = _v;                              \
+    _p;                                    \
+  })
+
+/**
  * Grow a slice's arena capacity to at least min_cap elements.
  * Includes runtime checks ALWAYS (even in release builds).
+ *
+ * When s.cap == 0 the slice is caller-backed and its len counts as capacity,
+ * so reserving at or below len is a no-op: adopt it with
+ * Reserve(arena, &s, s.len + 1) or more.
+ *
+ * Pair with PushUnchecked to fill the room this reserves: each unchecked push
+ * then costs no capacity check.
  */
 #define Reserve(arena, slice, min_cap)                                                                 \
   ({                                                                                                   \

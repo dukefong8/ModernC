@@ -370,6 +370,106 @@ UTEST(slice, push_grow_many) {
   ASSERT_EQ(s.len, 201);
 }
 
+/* --- Slice: PushUnchecked (caller-vouched capacity) --- */
+
+UTEST(slice, push_unchecked_fills_reserved) {
+  enum { size = KB(16) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints s = {0};
+  Reserve(arena, &s, s.len + 200);
+  isize cap = s.cap;
+  byte* cur = arena->cur;
+
+  for (int i = 0; i < 200; i++) {
+    int* p = PushUnchecked(&s, i * 2);
+    ASSERT_TRUE(p == &s.data[i]);
+    ASSERT_EQ(*p, i * 2);
+  }
+
+  ASSERT_EQ(s.len, 200);
+  ASSERT_EQ(s.cap, cap);       // no growth stepped it
+  ASSERT_EQ(arena->cur, cur);  // and nothing allocated at all
+  ASSERT_EQ(s.data[199], 398);
+}
+
+UTEST(slice, push_unchecked_shares_state_with_push) {
+  enum { size = KB(16) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints s = {0};
+  Reserve(arena, &s, 4);
+  PushUnchecked(&s, 1);
+  PushUnchecked(&s, 2);
+
+  // Checked Push sees the unchecked len and grows past the reserved room.
+  Push(arena, &s, 3);
+  Push(arena, &s, 4);
+  Push(arena, &s, 5);
+  ASSERT_EQ(s.len, 5);
+
+  // The slice now has fresh room again: fill it unchecked.
+  PushUnchecked(&s, 6);
+  ASSERT_EQ(s.len, 6);
+  for (int i = 0; i < 6; i++)
+    ASSERT_EQ(s.data[i], i + 1);
+}
+
+UTEST(slice, push_unchecked_top_up_partially_filled) {
+  enum { size = KB(16) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints s = {0};
+  for (int i = 0; i < 3; i++)
+    Push(arena, &s, i * 10);
+
+  // s.len + n rooms n more pushes on top of the 3 already held.
+  Reserve(arena, &s, s.len + 100);
+  isize cap = s.cap;
+  byte* cur = arena->cur;
+
+  for (int i = 0; i < 100; i++)
+    PushUnchecked(&s, i);
+
+  ASSERT_EQ(s.len, 103);
+  ASSERT_EQ(s.cap, cap);       // no growth stepped it
+  ASSERT_EQ(arena->cur, cur);  // and nothing allocated at all
+  ASSERT_EQ(s.data[0], 0);
+  ASSERT_EQ(s.data[2], 20);
+  ASSERT_EQ(s.data[102], 99);
+}
+
+UTEST(slice, push_unchecked_adopts_caller_backed) {
+  enum { size = KB(16) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  int stack_data[] = {10, 20, 30, 40, 50};
+  ints s = {.data = stack_data, .len = Countof(stack_data)};
+
+  // s.len + n both adopts the caller buffer and rooms n more pushes: a plain
+  // Reserve(arena, &s, 10) would still leave cap == 0, but s.len + 10 exceeds
+  // len and so moves the slice into the arena.
+  Reserve(arena, &s, s.len + 10);
+  ASSERT_TRUE(s.data != stack_data);
+  ASSERT_EQ(s.len, 5);
+  ASSERT_TRUE(s.cap >= 15);
+
+  byte* cur = arena->cur;
+  for (int i = 0; i < 10; i++)
+    PushUnchecked(&s, i);
+
+  ASSERT_EQ(s.len, 15);
+  ASSERT_EQ(arena->cur, cur);  // nothing allocated at all
+  ASSERT_EQ(s.data[0], 10);
+  ASSERT_EQ(s.data[4], 50);
+  ASSERT_EQ(s.data[14], 9);
+  ASSERT_EQ(stack_data[4], 50);  // caller's buffer untouched
+}
+
 UTEST(slice, reserve_grows_up_front) {
   enum { size = KB(16) };
   byte mem[size] = {0};

@@ -56,15 +56,17 @@ OOM policy is per-call and three-way: default is `longjmp` to the `jmp_buf` regi
 
 The API surface built on top: `New(arena, T[, n][, NO_INIT | OOM_NULL | src_ptr])` (`_Generic`
 selects copy-init when the 4th arg is a pointer), `Scratch(arena)` for scope-restored temporaries,
-`Slice(T)` + `Push`/`Reserve`/`Clone`, and the `astr` length-prefixed string family (`S(s)` for
-printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
+`Slice(T)` + `Push`/`PushUnchecked`/`Reserve`/`Clone`, and the `astr` length-prefixed string
+family (`S(s)` for printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
 
-`Push(arena, &s, v)` is the only way to append: it stores the value it is given, so call sites
-spell the element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
+`Push(arena, &s, v)` is the way to append: it stores the value it is given, so call sites spell the
+element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
 (`-Wpointer-type-mismatch`), not a conversion. An element whose contents are produced rather than
 known up front is pushed as a placeholder and filled through the returned pointer; `New`
 allocates a standalone object, it does not append. `Reserve(arena, &s, n)` grows capacity up front
-so a batch of pushes never steps it. Elements are read and written through `s.data[i]` directly.
+so a batch of pushes never steps it, and `PushUnchecked(&s, v)` — Push without the bounds check,
+and without the arena argument because it never allocates — fills that reserved room; debug builds
+trap when the room runs out. Elements are read and written through `s.data[i]` directly.
 
 `Slice(T)` is an untagged struct (`T *data`, `len`, `cap`): `Slice(struct Point)` and
 `Slice(const char*)` work as written, and repeat expansions don't collide on a tag;
