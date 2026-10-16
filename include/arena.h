@@ -804,6 +804,11 @@ typedef struct astr {
  */
 #define S(s) (int)(s).len, (s).data
 
+// True when s's bytes end exactly at the arena's bump pointer (see arena_at_tip).
+ARENA_INLINE bool _astr_at_tip(const Arena* arena, astr s) {
+  return arena_at_tip(arena, s.data, 1, s.len);
+}
+
 /**
  * @brief Clone string into arena memory.
  * @param arena Arena to allocate in
@@ -813,7 +818,7 @@ typedef struct astr {
  * No-op if string is empty or already at arena tip.
  */
 ARENA_INLINE astr astr_clone(Arena* arena, astr s) {
-  if (s.len == 0 || s.data + s.len == (char*)arena->cur)
+  if (s.len == 0 || _astr_at_tip(arena, s))
     return s;
 
   astr s2 = s;
@@ -829,15 +834,25 @@ ARENA_INLINE astr astr_clone(Arena* arena, astr s) {
  * @param tail Second string
  * @return New astr with concatenated data
  *
- * Optimized to avoid copying when possible.
+ * Optimized to avoid copying when possible: the common chained-append shape
+ * `s = astr_concat(arena, s, astr_format(arena, ...))` leaves tail right
+ * after head at the tip, so the result extends in place with no copying at
+ * all. Otherwise head and/or tail are cloned as needed.
  */
 ARENA_INLINE astr astr_concat(Arena* arena, astr head, astr tail) {
   if (head.len == 0) {
-    return tail.len && tail.data + tail.len == (char*)arena->cur ? tail : astr_clone(arena, tail);
+    return tail.len > 0 && _astr_at_tip(arena, tail) ? tail : astr_clone(arena, tail);
+  }
+
+  if (tail.len > 0 && _astr_at_tip(arena, tail) && tail.data == head.data + head.len) {
+    // head || tail already sits contiguously at the arena tip — extend in
+    // place: no copies, no allocations, and the result stays at the tip.
+    head.len += tail.len;
+    return head;
   }
 
   astr result = astr_clone(arena, head);
-  if (tail.len > 0 && tail.data + tail.len == (char*)arena->cur) {
+  if (tail.len > 0 && _astr_at_tip(arena, tail)) {
     // tail overlaps head at arena tip — force copy to avoid no-op clone
     char* p = New(arena, char, tail.len, NO_INIT);
     memmove(p, tail.data, tail.len);
@@ -895,25 +910,36 @@ ARENA_INLINE astr astr_cat_cstr(Arena* arena, astr head, const char* str) {
 /**
  * Format string using printf-style format.
  *
- * Returns arena-allocated formatted string.
+ * Returns arena-allocated formatted string. Results up to 255 bytes are
+ * formatted once into a stack buffer and copied into the arena; longer
+ * results take a second formatting pass into the arena.
  *
  * Usage:
  *   astr s1 = astr_format(arena, "%.10f, $%d, %.*s", 3.1415926, 42, S(s));
  */
 static astr astr_format(Arena* arena, const char* format, ...) {
+  enum { STACK_BUF = 256 };
+  char buf[STACK_BUF];
+
   va_list args;
   va_start(args, format);
-  int nbytes = vsnprintf(NULL, 0, format, args);
+  int nbytes = vsnprintf(buf, sizeof buf, format, args);
   va_end(args);
   Assert(nbytes >= 0);
 
-  void* data = New(arena, char, nbytes + 1, NO_INIT);
-  va_start(args, format);
-  int nbytes2 = vsnprintf(data, nbytes + 1, format, args);
-  va_end(args);
-  Assert(nbytes2 == nbytes);
-
-  arena->cur--;  // Drop null terminator so astr_concat still works
+  char* data;
+  if (nbytes < STACK_BUF) {
+    data = New(arena, char, nbytes + 1, NO_INIT);
+    memcpy(data, buf, nbytes);
+    data[nbytes] = '\0';
+  } else {
+    data = New(arena, char, nbytes + 1, NO_INIT);
+    va_start(args, format);
+    int nbytes2 = vsnprintf(data, nbytes + 1, format, args);
+    va_end(args);
+    Assert(nbytes2 == nbytes);
+  }
+  arena->cur--;  // Drop null terminator so astr_concat can extend it in place.
 
   return (astr){.data = data, .len = nbytes};
 }

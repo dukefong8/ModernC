@@ -82,7 +82,9 @@ The layout must stay identical to `SliceInternal`, which `arena_slice_reserve` m
 **Allocation order is semantically load-bearing.** Several "optimizations" are really contracts
 with the caller: `arena_free` only reclaims when the pointer is at the bump tip; `Push` grows in
 place only when the slice sits at the tip; `astr_clone`/`astr_concat` skip copying when the source
-ends exactly at `arena->cur`. So these functions silently degrade or no-op depending on what was
+ends exactly at `arena->cur`, and a concat whose tail starts right where an at-tip head ends (the
+`s = astr_concat(arena, s, astr_format(arena, ...))` chain shape) extends `s` in place with no
+copying at all. So these functions silently degrade or no-op depending on what was
 allocated just before, and an unrelated allocation can turn a free into a leak. When you see code
 that looks like a pointless redundant copy, it is usually defending against—or relying on—this
 at-tip property.

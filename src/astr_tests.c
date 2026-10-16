@@ -238,6 +238,122 @@ UTEST(astr, concat_empty_head) {
   ASSERT_TRUE(astr_equals(c, astr("world")));
 }
 
+UTEST(astr, concat_chain_in_place) {
+  // The codegen shape: out = astr_concat(out, astr_format(...)) in a loop.
+  // Once out is in the arena, every append extends it in place: the data
+  // pointer never moves and the arena grows linearly with the output.
+  enum { size = KB(4), steps = 64 };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  astr out = astr("v = ");  // literal head, adopted by the first append
+  isize used = arena->cur - mem;
+  char want[256];
+  isize want_len = 0;
+  memcpy(want, out.data, (size_t)out.len);
+  want_len += out.len;
+
+  for (int i = 0; i < steps; i++) {
+    astr piece = astr_format(arena, "x%d", i);
+    want_len += snprintf(want + want_len, sizeof want - (size_t)want_len, "x%d", i);
+    out = astr_concat(arena, out, piece);
+  }
+
+  ASSERT_TRUE(astr_equals(out, (astr){want, want_len}));
+
+  // Linear arena use: out + the one abandoned copy of "x0" from the first
+  // append, when the literal head was adopted.
+  ASSERT_EQ(arena->cur - mem, used + out.len + 2);
+
+  // In place: re-running the first append's shape would move data otherwise.
+  char* data = out.data;
+  out = astr_concat(arena, out, astr_format(arena, "!"));
+  ASSERT_TRUE(out.data == data);
+  ASSERT_TRUE(out.data + out.len == (char*)arena->cur);
+}
+
+UTEST(astr, format_long_and_empty) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  char fill[257];
+  memset(fill, 'a', 256);
+  fill[256] = 0;
+  astr want255 = {fill, 255};
+  astr want256 = {fill, 256};
+
+  // 255 bytes: stack-buffer fast path; 256: exactly the buffer size, second pass
+  astr a = astr_format(arena, "%.255s", fill);
+  ASSERT_TRUE(astr_equals(a, want255));
+  ASSERT_TRUE(a.data + a.len == (char*)arena->cur);
+  ASSERT_EQ(a.data[a.len], '\0');
+
+  astr b = astr_format(arena, "%.256s", fill);
+  ASSERT_TRUE(astr_equals(b, want256));
+  ASSERT_TRUE(b.data + b.len == (char*)arena->cur);
+  ASSERT_EQ(b.data[b.len], '\0');
+
+  // Both paths drop the null terminator from the allocation: concat still
+  // extends in place and the next allocation reclaims that byte.
+  astr c = astr_concat(arena, b, astr("!"));
+  ASSERT_EQ(c.len, 257);
+  ASSERT_TRUE(c.data == b.data);
+  ASSERT_EQ(c.data[c.len - 1], '!');
+  ASSERT_TRUE(c.data + c.len == (char*)arena->cur);
+
+  astr empty = astr_format(arena, "");
+  ASSERT_EQ(empty.len, 0);
+  ASSERT_TRUE(empty.data == (char*)arena->cur);
+}
+
+UTEST(astr, concat_format_slow_tail) {
+  // A slow-path format chains exactly like a short one: an
+  // adjacent slow tail extends the head in place with no stray NUL.
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  char big[301];
+  memset(big, 'x', 300);
+  big[300] = 0;
+
+  astr h = astr_format(arena, "AB");
+  astr r = astr_concat(arena, h, astr_format(arena, "%.300s", big));
+  ASSERT_EQ(r.len, 302);
+  ASSERT_TRUE(r.data == h.data);
+  ASSERT_TRUE(memcmp(r.data + 2, big, 300) == 0);
+  ASSERT_TRUE(r.data + r.len == (char*)arena->cur);
+
+  // The dropped NUL stays outside the string; appending reclaims that byte.
+  r = astr_concat(arena, r, astr_format(arena, "!"));
+  ASSERT_EQ(r.len, 303);
+  ASSERT_EQ(r.data[302], '!');
+  ASSERT_TRUE(r.data + r.len == (char*)arena->cur);
+}
+
+UTEST(astr, concat_format_slow_head) {
+  // Slow-path format as head with an adjacent short tail: still in place,
+  // and the C-string view has no stray NULs.
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  char big[301];
+  memset(big, 'x', 300);
+  big[300] = 0;
+
+  astr h = astr_format(arena, "%.300s", big);
+  astr r = astr_concat(arena, h, astr_format(arena, "-%d", 7));
+  ASSERT_EQ(r.len, 302);
+  ASSERT_TRUE(r.data == h.data);
+  ASSERT_TRUE(memcmp(r.data, big, 300) == 0);
+  ASSERT_TRUE(astr_equals(astr_substr(r, 300, 2), astr("-7")));
+
+  const char* cs = astr_to_cstr(*arena, r);
+  ASSERT_EQ(strlen(cs), (size_t)r.len);
+}
+
 UTEST(astr, concat_empty_tail) {
   enum { size = KB(4) };
   byte mem[size] = {0};
