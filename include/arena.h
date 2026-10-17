@@ -975,48 +975,69 @@ ARENA_INLINE char* astr_cstrdup(astr s) {
   return strndup(s.data, s.len);
 }
 
-// Build 256-bit charset membership table. Always treats \0 as separator.
-ARENA_INLINE void _astr_charset_table(const char* charset, unsigned char table[static 256 / 8]) {
-  memset(table, 0, 256 / 8);
-  for (const char* c = charset; *c; c++) {
-    unsigned char ch = (unsigned char)*c;
-    table[ch >> 3] |= (1u << (ch & 7));
-  }
-  table[0] |= 1;  // \0 can never be in charset; always treat as separator
+// Build a direct byte-membership table (nonzero = separator). Always treats
+// \0 as separator.
+//
+// Returns the charset's byte when a single-byte memchr scan alone can find
+// the token end: exactly one charset byte and no embedded \0 in s (which is a
+// separator too). 0 otherwise, keeping the caller on the table path.
+ARENA_INLINE unsigned char _astr_charset_table(const char* charset, astr s, unsigned char table[static 256]) {
+  memset(table, 0, 256);
+  for (const char* c = charset; *c; c++)
+    table[(unsigned char)*c] = 1;
+  table[0] = 1;  // \0 can never be in charset; always treat as separator
+
+  if (charset[0] == '\0' || charset[1] != '\0')
+    return 0;
+  if (s.len > 0 && memchr(s.data, '\0', (size_t)s.len) != NULL)
+    return 0;
+  return (unsigned char)charset[0];
 }
 
-// Internal helper for astr_split_by_char (table must be pre-built)
-ARENA_INLINE astr _astr_split_by_char(astr s, const unsigned char table[static 256 / 8], isize* pos) {
+// Internal helper for astr_split_by_char (table must be pre-built).
+//
+// Leaves pos at the separator run following the token, with the next call's
+// leading-separator skip consuming it: each byte is tested exactly once
+// (previously the run after a token was rescanned as the next token's leading
+// run). A one-byte, NUL-free input (single != 0) finds the token end with
+// memchr.
+ARENA_INLINE astr _astr_split_by_char(astr s, const unsigned char table[static 256], unsigned char single,
+                                      isize* pos) {
   isize i = *pos;
 
-#define _ASTR_IN_SET(ch) (table[(unsigned char)(ch) >> 3] & (1u << ((unsigned char)(ch) & 7)))
+  if (single != 0) {
+    while (i < s.len && (unsigned char)s.data[i] == single)
+      i++;
 
-  // Skip leading separators
-  while (i < s.len && _ASTR_IN_SET(s.data[i]))
+    isize start = i;
+    const char* sep = memchr(s.data + start, single, (size_t)(s.len - start));
+    i = sep ? (isize)(sep - s.data) : s.len;
+
+    *pos = i;
+    return (astr){s.data + start, i - start};
+  }
+
+  // Skip the separator run left by the previous token (or leading the string)
+  while (i < s.len && table[(unsigned char)s.data[i]])
     i++;
 
   isize start = i;
 
   // Scan for next separator
-  while (i < s.len && !_ASTR_IN_SET(s.data[i]))
-    i++;
-
-  astr token = {s.data + start, i - start};
-
-  // Skip trailing separators
-  while (i < s.len && _ASTR_IN_SET(s.data[i]))
+  while (i < s.len && !table[(unsigned char)s.data[i]])
     i++;
 
   *pos = i;
-  return token;
-#undef _ASTR_IN_SET
+  return (astr){s.data + start, i - start};
 }
 
 /**
  * Split string by any character in charset.
  *
- * Table is built once on first iteration (table[0] is a natural sentinel:
- * always non-zero after build because \0 is always marked as separator).
+ * The membership table is built once, on the first iteration (table[0] is a
+ * natural sentinel: always non-zero after build because \0 is always a
+ * separator). A one-byte charset over NUL-free input scans tokens with
+ * memchr, everything else walks the table.
  *
  * Usage:
  *   int i = 0;
@@ -1025,17 +1046,33 @@ ARENA_INLINE astr _astr_split_by_char(astr s, const unsigned char table[static 2
  *     i++;
  *   }
  */
-// clang-format off
-#define astr_split_by_char(it, charset, str)                   \
-  struct {                                                     \
-    astr input, token;                                         \
-    isize pos;                                                 \
-    unsigned char table[256 / 8];                              \
-  } it = {.input = str};                                       \
-  (it.table[0] || (_astr_charset_table(charset, it.table), 1)) \
-     && it.pos < it.input.len                                  \
-     && (it.token = _astr_split_by_char(it.input, it.table, &it.pos)).len > 0;
-// clang-format on
+#define astr_split_by_char(it, charset, str)                                            \
+  struct {                                                                              \
+    astr input, token;                                                                  \
+    isize pos;                                                                          \
+    unsigned char table[256];                                                           \
+    unsigned char single;                                                               \
+  } it = {.input = str};                                                                \
+  (it.table[0] || (it.single = _astr_charset_table(charset, it.input, it.table), 1)) && \
+      it.pos < it.input.len &&                                                          \
+      (it.token = _astr_split_by_char(it.input, it.table, it.single, &it.pos)).len > 0;
+
+// Search for a short separator: memchr up to the first-byte candidates and
+// compare the rest. sep.len must be >= 2 and <= hay.len.
+ARENA_INLINE const char* _astr_search(astr hay, astr sep) {
+  Assert(sep.len >= 2 && hay.len >= sep.len);
+  const char* p = hay.data;
+  const char* last = hay.data + hay.len - sep.len;  // last possible start
+  while (p <= last) {
+    p = memchr(p, (unsigned char)sep.data[0], (size_t)(last - p) + 1);
+    if (!p)
+      return NULL;
+    if (memcmp(p + 1, sep.data + 1, (size_t)(sep.len - 1)) == 0)
+      return p;
+    p++;
+  }
+  return NULL;
+}
 
 // Internal helper for astr_split
 ARENA_INLINE astr _astr_split(astr s, astr sep, isize* pos) {
@@ -1044,7 +1081,13 @@ ARENA_INLINE astr _astr_split(astr s, astr sep, isize* pos) {
     *pos = s.len;
     return slice;
   }
-  const char* res = memmem(slice.data, slice.len, sep.data, sep.len);
+  const char* res;
+  if (sep.len == 1)
+    res = memchr(slice.data, (unsigned char)sep.data[0], (size_t)slice.len);
+  else if (sep.len <= 4 && slice.len >= sep.len)
+    res = _astr_search(slice, sep);
+  else
+    res = memmem(slice.data, (size_t)slice.len, sep.data, (size_t)sep.len);
   astr token = {slice.data, res ? (res - slice.data) : slice.len};
   *pos += token.len + sep.len;
   return token;
@@ -1052,6 +1095,10 @@ ARENA_INLINE astr _astr_split(astr s, astr sep, isize* pos) {
 
 /**
  * Split string by multi-character separator.
+ *
+ * One-byte separators go straight to memchr; separators up to four bytes use
+ * _astr_search (memchr to first-byte candidates, compare the rest); longer
+ * ones fall back to memmem.
  *
  * Usage:
  *   for (astr_split(it, ",", s3)) {
