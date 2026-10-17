@@ -159,6 +159,78 @@ UTEST(astr, split_by_char_embedded_nul) {
   ASSERT_EQ(i, 3);
 }
 
+UTEST(astr, split_by_char_high_byte_charset) {
+  // The single-char memchr fast path must compare bytes unsigned: a >0x7f
+  // separator is a negative char and would never match after sign extension.
+  char data[] = "a\xa9"
+                "b\xa9"
+                "c";
+  astr s = {data, 5};
+  int i = 0;
+  astr tokens[3];
+  for (astr_split_by_char(it, "\xa9", s)) {
+    tokens[i++] = it.token;
+  }
+  ASSERT_EQ(i, 3);
+  ASSERT_TRUE(astr_equals(tokens[0], astr("a")));
+  ASSERT_TRUE(astr_equals(tokens[1], astr("b")));
+  ASSERT_TRUE(astr_equals(tokens[2], astr("c")));
+}
+
+UTEST(astr, split_by_char_high_byte_charset_multi) {
+  // Same, through the multi-byte table path.
+  char data[] = "a\xa9"
+                "b\xff"
+                "c";
+  astr s = {data, 5};
+  int i = 0;
+  astr tokens[3];
+  for (astr_split_by_char(it, "\xa9\xff", s)) {
+    tokens[i++] = it.token;
+  }
+  ASSERT_EQ(i, 3);
+  ASSERT_TRUE(astr_equals(tokens[0], astr("a")));
+  ASSERT_TRUE(astr_equals(tokens[1], astr("b")));
+  ASSERT_TRUE(astr_equals(tokens[2], astr("c")));
+}
+
+UTEST(astr, split_false_first_byte_candidate) {
+  // "aabab" / "ab": the candidate at 0 is a false positive (followed by 'a',
+  // not 'b'); the search must keep going to the pair at 1, then the trailing
+  // empty token at 3 ("ab" at the end, with pos == len after consuming it).
+  int i = 0;
+  astr tokens[3];
+  for (astr_split(it, "ab", astr("aabab"))) {
+    tokens[i++] = it.token;
+  }
+  ASSERT_EQ(i, 2);
+  ASSERT_TRUE(astr_equals(tokens[0], astr("a")));
+  ASSERT_EQ(tokens[1].len, 0);
+}
+
+UTEST(astr, split_three_byte_separator) {
+  int i = 0;
+  astr tokens[3];
+  for (astr_split(it, "...", astr("a...b...c"))) {
+    tokens[i++] = it.token;
+  }
+  ASSERT_EQ(i, 3);
+  ASSERT_TRUE(astr_equals(tokens[0], astr("a")));
+  ASSERT_TRUE(astr_equals(tokens[1], astr("b")));
+  ASSERT_TRUE(astr_equals(tokens[2], astr("c")));
+}
+
+UTEST(astr, split_separator_at_end) {
+  // Match ending exactly at the string end: no trailing empty token.
+  int i = 0;
+  astr tokens[3];
+  for (astr_split(it, "->", astr("a->"))) {
+    tokens[i++] = it.token;
+  }
+  ASSERT_EQ(i, 1);
+  ASSERT_TRUE(astr_equals(tokens[0], astr("a")));
+}
+
 UTEST(astr, trim_ascii) {
   astr s = astr_trim(astr("  hello  "));
   ASSERT_TRUE(astr_equals(s, astr("hello")));
