@@ -22,11 +22,11 @@
 #define BTREE_C(a, b)  BTREE_CC(a, b)
 
 // API symbols are the calls available to the user.
-#define BTREE_API(name)   BTREE_C(BTREE_C(BTREE_NAME, _), name)
+#define BTREE_API(name) BTREE_C(BTREE_C(BTREE_NAME,_),name)
 
 // Internal symbols are prefixed with an underscore.
 // These should not be directly called by the user.
-#define BTREE_SYM(name)   BTREE_C(BTREE_C(BTREE_C(_, BTREE_NAME), _internal_), name)
+#define BTREE_SYM(name) BTREE_C(BTREE_C(BTREE_C(_,BTREE_NAME),_internal_),name)
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -87,6 +87,8 @@
 #define BTREE_NOINLINE
 #endif
 
+#define BTREE_LIBRARY_UUID "5baabf89e8704243beced716ab29cbbb"
+
 // Provide a custom allocator using BTREE_MALLOC and BTREE_FREE.
 // Such as:
 //
@@ -128,6 +130,7 @@
 #define BTREE_NODE struct BTREE_NAME
 #define BTREE_ITEM BTREE_TYPE
 #define BTREE_ITER struct BTREE_API(iter)
+#define BTREE_ITERI struct BTREE_SYM(iteri)
 #define BTREE_SNODE struct BTREE_SYM(snode)
 
 // The following status codes are private to this file only.
@@ -164,7 +167,8 @@ enum BTREE_API(status) {
 };
 
 BTREE_NODE;
-BTREE_ITER;
+BTREE_ITER { char internal[64+16*BTREE_MAXHEIGHT]; };
+
 
 BTREE_EXTERN int BTREE_API(get)(BTREE_NODE **root, BTREE_ITEM key,
     BTREE_ITEM *item_out, void *udata);
@@ -211,11 +215,10 @@ BTREE_EXTERN int BTREE_API(index_of)(BTREE_NODE **root, BTREE_ITEM key,
 BTREE_EXTERN size_t BTREE_API(count)(BTREE_NODE **root, void *udata);
 
 // Cursor Iterators
-BTREE_EXTERN void BTREE_API(iter_init)(BTREE_NODE **root, BTREE_ITER **iter,
+BTREE_EXTERN void BTREE_API(iter_init)(BTREE_NODE **root, BTREE_ITER *iter,
     void *udata);
 BTREE_EXTERN int BTREE_API(iter_status)(BTREE_ITER *iter);
 BTREE_EXTERN bool BTREE_API(iter_valid)(BTREE_ITER *iter);
-BTREE_EXTERN void BTREE_API(iter_release)(BTREE_ITER *iter);
 BTREE_EXTERN void BTREE_API(iter_item)(BTREE_ITER *iter, BTREE_ITEM *item);
 BTREE_EXTERN void BTREE_API(iter_next)(BTREE_ITER *iter);
 
@@ -266,10 +269,10 @@ BTREE_EXTERN int BTREE_API(front_mut)(BTREE_NODE **root, BTREE_ITEM *item_out,
     void *udata);
 BTREE_EXTERN int BTREE_API(back_mut)(BTREE_NODE **root, BTREE_ITEM *item_out,
     void *udata);
-BTREE_EXTERN void BTREE_API(iter_init_mut)(BTREE_NODE **root, BTREE_ITER **iter,
+BTREE_EXTERN void BTREE_API(iter_init_mut)(BTREE_NODE **root, BTREE_ITER *iter,
     void *udata);
-BTREE_EXTERN int BTREE_API(scan_mut)(BTREE_NODE **root, bool(*iter)(BTREE_ITEM item,
-    void *udata), void *udata);
+BTREE_EXTERN int BTREE_API(scan_mut)(BTREE_NODE **root, 
+    bool(*iter)(BTREE_ITEM item, void *udata), void *udata);
 BTREE_EXTERN int BTREE_API(scan_desc_mut)(BTREE_NODE **root,
     bool(*iter)(BTREE_ITEM item, void *udata), void *udata);
 BTREE_EXTERN int BTREE_API(seek_mut)(BTREE_NODE **root, BTREE_ITEM key,
@@ -353,15 +356,16 @@ static int BTREE_SYM(compare)(BTREE_ITEM a, BTREE_ITEM b, void *udata) {
 }
 #if !defined(BTREE_NOORDER)
 #error \
-Neither BTREE_COMPARE nor BTREE_LESS were defined. \
-Alternatively define BTREE_NOORDER if only the "Counted B-tree" API is desired. \
+Neither BTREE_COMPARE nor BTREE_LESS were defined. Alternatively define \
+BTREE_NOORDER if only the "Counted B-tree" API is desired. \
 Visit https://github.com/tidwall/btree.h for more information.
 #endif
 #endif
 
 #if defined(BTREE_NOORDER) && (defined(BTREE_LESS) || defined(BTREE_COMPARE))
 #error \
-Neither BTREE_COMPARE nor BTREE_LESS are allowed when BTREE_NOORDER is defined. \
+Neither BTREE_COMPARE nor BTREE_LESS are allowed when BTREE_NOORDER is \
+defined. \
 Visit https://github.com/tidwall/btree.h for more information.
 #endif
 
@@ -372,7 +376,9 @@ static bool BTREE_SYM(maybelessequal)(BTREE_ITEM a, BTREE_ITEM b, void *udata) {
 }
 #endif
 
-static bool BTREE_SYM(item_copy)(BTREE_ITEM item, BTREE_ITEM *copy, void *udata) {
+static bool BTREE_SYM(item_copy)(BTREE_ITEM item, BTREE_ITEM *copy, 
+    void *udata)
+{
     (void)item, (void)copy, (void)udata;
 #ifdef BTREE_ITEMCOPY
     BTREE_ITEMCOPY
@@ -678,9 +684,11 @@ static void BTREE_SYM(node_free)(BTREE_NODE *node, void *udata) {
             BTREE_SYM(node_free)(node->children[i], udata);
         }
     }
+#ifdef BTREE_ITEMFREE
     for (int i = 0; i < node->len; i++) {
         BTREE_SYM(item_free)(node->items[i], udata);
     }
+#endif
     BTREE_SYM(free)(node, BTREE_NODE_SIZE(node), udata);
 }
 
@@ -717,8 +725,8 @@ static int BTREE_SYM(search_bsearch)(BTREE_ITEM *items, int nitems,
 }
 #else
 BTREE_INLINE
-static int BTREE_SYM(search_linear)(BTREE_ITEM *items, int nitems, BTREE_ITEM key,
-    void *udata, int *found)
+static int BTREE_SYM(search_linear)(BTREE_ITEM *items, int nitems,
+    BTREE_ITEM key, void *udata, int *found)
 {
     int i = 0;
     *found = 0;
@@ -904,7 +912,9 @@ static void BTREE_SYM(print)(BTREE_NODE **root, FILE *file,
     }
 }
 
-static BTREE_NODE *BTREE_SYM(node_copy)(BTREE_NODE *node, bool deep, void *udata) {
+static BTREE_NODE *BTREE_SYM(node_copy)(BTREE_NODE *node, bool deep,
+    void *udata)
+{
     BTREE_NODE *node2 = BTREE_SYM(alloc_node)(node->isleaf, udata);
     if (!node2) {
         return 0;
@@ -912,16 +922,18 @@ static BTREE_NODE *BTREE_SYM(node_copy)(BTREE_NODE *node, bool deep, void *udata
     node2->len = node->len;
     node2->height = node->height;
     
-    int icopied = 0;
     int ccopied = 0;
 
     // Copy items
+#ifdef BTREE_ITEMCOPY
+    int icopied = 0;
     for (int i = 0; i < node->len; i++) {
         if (!BTREE_SYM(item_copy)(node->items[i], &node2->items[i], udata)) {
             goto fail;
         }
         icopied++;
     }
+#endif
     if (!node->isleaf) {
         // Copy children
         for (int i = 0; i <= node->len; i++) {
@@ -950,9 +962,11 @@ static BTREE_NODE *BTREE_SYM(node_copy)(BTREE_NODE *node, bool deep, void *udata
     return node2;
 fail:
     // Somthing failed to copy. Assume NOMEM and revert the allocated node.
+#ifdef BTREE_ITEMCOPY
     for (int i = 0; i < icopied; i++) {
         BTREE_SYM(item_free)(node2->items[i], udata);
     }
+#endif
     if (!node->isleaf) {
         for (int i = 0; i < ccopied; i++) {
             BTREE_SYM(node_free)(node2->children[i], udata);
@@ -1024,8 +1038,8 @@ static int BTREE_SYM(scan)(BTREE_NODE **root, bool(*iter)(BTREE_ITEM item,
     return status;
 }
 
-static bool BTREE_SYM(node_scan_mut)(BTREE_NODE *node, bool(*iter)(BTREE_ITEM item, 
-    void *udata), void *udata, int *status)
+static bool BTREE_SYM(node_scan_mut)(BTREE_NODE *node,
+    bool(*iter)(BTREE_ITEM item, void *udata), void *udata, int *status)
 {
     if (node->isleaf) {
         for (int i = 0; i < node->len; i++) {
@@ -1146,8 +1160,8 @@ static bool BTREE_SYM(node_scan_desc_mut)(BTREE_NODE *node, bool(*iter)(
     return true;
 }
 
-static int BTREE_SYM(scan_desc_mut)(BTREE_NODE **root, bool(*iter)(BTREE_ITEM item,
-    void *udata), void *udata)
+static int BTREE_SYM(scan_desc_mut)(BTREE_NODE **root,
+    bool(*iter)(BTREE_ITEM item, void *udata), void *udata)
 {
     int status = BTREE_FINISHED;
     if (*root) {
@@ -1605,7 +1619,9 @@ static int BTREE_SYM(seek_desc_mut)(BTREE_NODE **root, BTREE_ITEM key,
         if (!BTREE_SYM(cow)(root, udata)) {
             return BTREE_NOMEM;
         }
-        if (!BTREE_SYM(node_seek_desc_mut)(*root, key, iter, udata, 0, &status)){
+        if (!BTREE_SYM(node_seek_desc_mut)(*root, key, iter, udata, 0,
+            &status))
+        {
             if (status == BTREE_FINISHED) {
                 status = BTREE_STOPPED;
             }
@@ -1671,8 +1687,8 @@ static int BTREE_SYM(index_of)(BTREE_NODE **root, BTREE_ITEM key,
 }
 
 // returns FOUND or NOTFOUND
-static int BTREE_SYM(get)(BTREE_NODE **root, BTREE_ITEM key, BTREE_ITEM *item_out,
-    void *udata)
+static int BTREE_SYM(get)(BTREE_NODE **root, BTREE_ITEM key,
+    BTREE_ITEM *item_out, void *udata)
 {
 #ifdef BTREE_NOORDER
     (void)root, (void)key, (void)item_out, (void)udata;
@@ -1751,7 +1767,7 @@ static int BTREE_SYM(get_mut)(BTREE_NODE **root, BTREE_ITEM key,
 }
 
 // returns true if key is found
-static bool BTREE_SYM(contains)(BTREE_NODE **root, BTREE_ITEM key, void *udata) {
+static bool BTREE_SYM(contains)(BTREE_NODE **root, BTREE_ITEM key, void *udata){
     return BTREE_SYM(get)(root, key, 0, udata) == BTREE_FOUND;
 }
 
@@ -2077,7 +2093,8 @@ static int BTREE_SYM(insert0)(BTREE_NODE **root, int act, size_t index,
         return BTREE_NOMEM;
     }
     while (1) {
-        int ret = BTREE_SYM(insert1)(*root, act, index, item, olditem, udata, 0);
+        int ret = BTREE_SYM(insert1)(*root, act, index, item, olditem, udata, 
+            0);
         if (ret != BTREE_MUSTSPLIT) {
             return ret;
         }
@@ -2192,7 +2209,9 @@ static int BTREE_SYM(insert)(BTREE_NODE **root, BTREE_ITEM item,
 #endif
 }
 
-static void BTREE_SYM(shift_left)(BTREE_NODE *node, int i, int n, bool for_merge){
+static void BTREE_SYM(shift_left)(BTREE_NODE *node, int i, int n,
+    bool for_merge)
+{
     BTREE_ASSERT(!BTREE_SYM(shared)(node));
     n--;
     for (int j = i; j < node->len-1; j++) {
@@ -2615,8 +2634,8 @@ static int BTREE_SYM(delete_fastpath)(BTREE_NODE **root, BTREE_ITEM key,
 #endif
 
 // returns DELETED, NOTFOUND, or NOMEM
-static int BTREE_SYM(delete)(BTREE_NODE **root, BTREE_ITEM key, BTREE_ITEM *olditem, 
-    void *udata)
+static int BTREE_SYM(delete)(BTREE_NODE **root, BTREE_ITEM key,
+    BTREE_ITEM *olditem, void *udata)
 {
 #ifdef BTREE_NOORDER
     (void)root, (void)key, (void)olditem, (void)udata;
@@ -2641,7 +2660,9 @@ static int BTREE_SYM(delete)(BTREE_NODE **root, BTREE_ITEM key, BTREE_ITEM *oldi
 
 
 // returns FOUND or NOTFOUND
-static int BTREE_SYM(front)(BTREE_NODE **root, BTREE_ITEM *item_out, void *udata) {
+static int BTREE_SYM(front)(BTREE_NODE **root, BTREE_ITEM *item_out,
+    void *udata)
+{
     (void)udata;
     if (!*root) {
         return BTREE_NOTFOUND;
@@ -2684,7 +2705,9 @@ static int BTREE_SYM(front_mut)(BTREE_NODE **root, BTREE_ITEM *item_out,
 }
 
 // returns FOUND or NOTFOUND
-static int BTREE_SYM(back)(BTREE_NODE **root, BTREE_ITEM *item_out, void *udata) {
+static int BTREE_SYM(back)(BTREE_NODE **root, BTREE_ITEM *item_out,
+    void *udata)
+{
     (void)udata;
     if (!*root) {
         return BTREE_NOTFOUND;
@@ -2764,8 +2787,8 @@ static int BTREE_SYM(get_at)(BTREE_NODE **root, size_t index, BTREE_ITEM *item,
     }
 }
 
-static int BTREE_SYM(get_at_mut)(BTREE_NODE **root, size_t index, BTREE_ITEM *item,
-    void *udata)
+static int BTREE_SYM(get_at_mut)(BTREE_NODE **root, size_t index,
+    BTREE_ITEM *item, void *udata)
 {
     if (!*root) {
         return BTREE_NOTFOUND;
@@ -2810,7 +2833,8 @@ static int BTREE_SYM(delete_at)(BTREE_NODE **root, size_t index,
     BTREE_ITEM *olditem, void *udata)
 {
     BTREE_ITEM spare = { 0 };
-    int ret = BTREE_SYM(delete0)(root, BTREE_DELAT, spare, index, udata, &spare);
+    int ret = BTREE_SYM(delete0)(root, BTREE_DELAT, spare, index, udata,
+        &spare);
     if (ret != BTREE_DELETED) {
         return ret;
     }
@@ -2820,8 +2844,8 @@ static int BTREE_SYM(delete_at)(BTREE_NODE **root, size_t index,
     return BTREE_DELETED;
 }
 
-static int BTREE_SYM(replace_at)(BTREE_NODE **root, size_t index, BTREE_ITEM item,
-    BTREE_ITEM *olditem, void *udata)
+static int BTREE_SYM(replace_at)(BTREE_NODE **root, size_t index,
+    BTREE_ITEM item, BTREE_ITEM *olditem, void *udata)
 {
     return BTREE_SYM(insert0)(root, BTREE_REPAT, index, item, olditem, udata);
 }
@@ -2970,7 +2994,8 @@ static int BTREE_SYM(pop_back_fastpath)(BTREE_NODE **root, BTREE_ITEM *olditem,
     return ret;
 }
 
-static int BTREE_SYM(pop_back)(BTREE_NODE **root, BTREE_ITEM *olditem, void *udata)
+static int BTREE_SYM(pop_back)(BTREE_NODE **root, BTREE_ITEM *olditem,
+    void *udata)
 {
     int ret;
     ret = BTREE_SYM(pop_back_fastpath)(root, olditem, udata);
@@ -3061,7 +3086,9 @@ static int BTREE_SYM(push_front_fastpath)(BTREE_NODE **root, BTREE_ITEM item,
     return ret;
 }
 
-static int BTREE_SYM(push_front)(BTREE_NODE **root, BTREE_ITEM item, void *udata) {
+static int BTREE_SYM(push_front)(BTREE_NODE **root, BTREE_ITEM item,
+    void *udata)
+{
     int ret = BTREE_SYM(push_front_fastpath)(root, item, udata);
     if (ret) {
         return ret;
@@ -3145,7 +3172,8 @@ static int BTREE_SYM(push_back_fastpath)(BTREE_NODE **root, BTREE_ITEM item,
     return ret;
 }
 
-static int BTREE_SYM(push_back)(BTREE_NODE **root, BTREE_ITEM item, void *udata) {
+static int BTREE_SYM(push_back)(BTREE_NODE **root, BTREE_ITEM item, void *udata)
+{
     int ret = BTREE_SYM(push_back_fastpath)(root, item, udata);
     if (ret) {
         return ret;
@@ -3158,13 +3186,14 @@ static int BTREE_SYM(push_back)(BTREE_NODE **root, BTREE_ITEM item, void *udata)
 // Returns NOMEM: System is out of memory.
 // Returns NOTFOUND: The item cannot be inserted because the index is out of 
 // bounds, thus the index was > tree count.
-static int BTREE_SYM(insert_at)(BTREE_NODE **root, size_t index, BTREE_ITEM item,
-    void *udata)
+static int BTREE_SYM(insert_at)(BTREE_NODE **root, size_t index,
+    BTREE_ITEM item, void *udata)
 {
     return BTREE_SYM(insert0)(root, BTREE_INSAT, index, item, 0, udata);
 }
 
-static int BTREE_SYM(copy)(BTREE_NODE **root, BTREE_NODE **newroot, void *udata) {
+static int BTREE_SYM(copy)(BTREE_NODE **root, BTREE_NODE **newroot, void *udata)
+{
     if (!*root) {
         if (newroot) {
             *newroot = 0;
@@ -3181,7 +3210,9 @@ static int BTREE_SYM(copy)(BTREE_NODE **root, BTREE_NODE **newroot, void *udata)
     return BTREE_COPIED;
 }
 
-static int BTREE_SYM(clone)(BTREE_NODE **root, BTREE_NODE **newroot, void *udata) {
+static int BTREE_SYM(clone)(BTREE_NODE **root, BTREE_NODE **newroot,
+    void *udata)
+{
 #ifndef BTREE_COW
     return BTREE_SYM(copy)(root, newroot, udata);
 #else
@@ -3199,74 +3230,64 @@ static int BTREE_SYM(clone)(BTREE_NODE **root, BTREE_NODE **newroot, void *udata
 // stack node used by an iterator
 BTREE_SNODE {
     BTREE_NODE *node; // the node
-    int index;       // index of current item in node, used by iter_item()
+    int index; // index of current item in node, used by iter_item()
 };
 
-#define BTREE_SCAN       0
-#define BTREE_SCANDESC   1
+#define BTREE_ISCAN       0
+#define BTREE_ISCANDESC   1
 
-BTREE_ITER {
-    BTREE_NODE **root;         // root node
-    void *udata;              // user data
-    int kind;                 // kind of iterator
-    bool mut;                 // this is a mutable iterator
-    bool valid;               // iterator is valid
-    short status;             // last status code. Zero for no errors
-    union {
-        struct  {
-            short nstack; // number of path nodes (depth)
-            BTREE_SNODE stack[BTREE_MAXHEIGHT]; // traversed path nodes
-        } s;
-    } u;
+// internal/private iterator structure
+BTREE_ITERI {
+    BTREE_NODE **root; // root node
+    void *udata; // user data
+    int kind; // kind of iterator
+    bool mut; // this is a mutable iterator
+    bool valid; // iterator is valid
+    short status; // last status code. Zero for no errors
+    short nstack; // number of path nodes (depth)
+    BTREE_SNODE stack[BTREE_MAXHEIGHT]; // traversed path nodes
 };
 
-static void BTREE_SYM(iter_init)(BTREE_NODE **root, BTREE_ITER **iter, void *udata)
+#include <assert.h>
+static_assert(sizeof(BTREE_ITER) >= sizeof(BTREE_ITERI), "wrong size");
+
+static void BTREE_SYM(iter_init)(BTREE_NODE **root, BTREE_ITERI *iter,
+    void *udata)
 {
-    *iter = BTREE_SYM(malloc)(sizeof(BTREE_ITER), udata);
-    if (*iter) {
-        (*iter)->root = root;
-        (*iter)->udata = udata;
-        (*iter)->mut = false;
-        (*iter)->valid = false;
-        (*iter)->kind = 0;
-    }
+    iter->root = root;
+    iter->udata = udata;
+    iter->mut = false;
+    iter->valid = false;
+    iter->kind = 0;
 }
 
-static void BTREE_SYM(iter_init_mut)(BTREE_NODE **root, BTREE_ITER **iter, 
+static void BTREE_SYM(iter_init_mut)(BTREE_NODE **root, BTREE_ITERI *iter, 
     void *udata)
 {
     BTREE_SYM(iter_init)(root, iter, udata);
-    if (*iter) {
-        (*iter)->mut = 1;
-    }
+    iter->mut = 1;
 }
 
-static void BTREE_SYM(iter_reset)(BTREE_ITER *iter, int kind) {
+static void BTREE_SYM(iter_reset)(BTREE_ITERI *iter, int kind) {
     iter->valid = true;
     iter->status = 0;
-    iter->u.s.nstack = 0;
+    iter->nstack = 0;
     iter->kind = kind;
 }
 
-static void BTREE_SYM(iter_release)(BTREE_ITER *iter) {
-    if (iter) {
-        BTREE_SYM(free)(iter, sizeof(BTREE_ITER), iter->udata);
-    }
+static bool BTREE_SYM(iter_valid)(BTREE_ITERI *iter) {
+    return iter->valid;
 }
 
-static bool BTREE_SYM(iter_valid)(BTREE_ITER *iter) {
-    return iter && iter->valid;
-}
-
-static int BTREE_SYM(iter_status)(BTREE_ITER *iter) {
-    return !iter ? BTREE_NOMEM : iter->status;
+static int BTREE_SYM(iter_status)(BTREE_ITERI *iter) {
+    return iter->status;
 }
 
 BTREE_NOINLINE
-static void BTREE_SYM(iter_next_asc)(BTREE_ITER *iter) {
-    BTREE_SNODE *snode = &iter->u.s.stack[iter->u.s.nstack-1];
+static void BTREE_SYM(iter_next_asc)(BTREE_ITERI *iter) {
+    BTREE_SNODE *snode = &iter->stack[iter->nstack-1];
     while (1) {
-        snode = &iter->u.s.stack[iter->u.s.nstack-1];
+        snode = &iter->stack[iter->nstack-1];
         snode->index++;
         if (snode->node->isleaf && snode->index < snode->node->len) {
         next_item:
@@ -3275,9 +3296,9 @@ static void BTREE_SYM(iter_next_asc)(BTREE_ITER *iter) {
         }
         if (snode->node->isleaf || snode->index == snode->node->len+1) {
             // pop the stack
-            while (iter->u.s.nstack > 1) {
-                iter->u.s.nstack--;
-                snode = &iter->u.s.stack[iter->u.s.nstack-1];
+            while (iter->nstack > 1) {
+                iter->nstack--;
+                snode = &iter->stack[iter->nstack-1];
                 if (snode->index < snode->node->len) {
                     goto next_item;
                 }
@@ -3293,17 +3314,17 @@ static void BTREE_SYM(iter_next_asc)(BTREE_ITER *iter) {
             iter->valid = false;
             return;
         }
-        iter->u.s.stack[iter->u.s.nstack++] = (BTREE_SNODE){ 
+        iter->stack[iter->nstack++] = (BTREE_SNODE){ 
             snode->node->children[snode->index], -1 };
     }
 }
 
 // Move iterator cursor to the previous item.
 BTREE_NOINLINE
-static void BTREE_SYM(iter_next_desc)(BTREE_ITER *iter) {
+static void BTREE_SYM(iter_next_desc)(BTREE_ITERI *iter) {
     BTREE_SNODE *snode;
     while (1) {
-        snode = &iter->u.s.stack[iter->u.s.nstack-1];
+        snode = &iter->stack[iter->nstack-1];
         snode->index--;
         if (snode->node->isleaf && snode->index > -1) {
             // Iterator now points to the next item
@@ -3311,9 +3332,9 @@ static void BTREE_SYM(iter_next_desc)(BTREE_ITER *iter) {
         }
         if (snode->node->isleaf) {
             // pop stack
-            while (iter->u.s.nstack > 1) {
-                iter->u.s.nstack--;
-                snode = &iter->u.s.stack[iter->u.s.nstack-1];
+            while (iter->nstack > 1) {
+                iter->nstack--;
+                snode = &iter->stack[iter->nstack-1];
                 snode->index--;
                 if (snode->index > -1) {
                     // Iterator now points to the next item
@@ -3333,36 +3354,35 @@ static void BTREE_SYM(iter_next_desc)(BTREE_ITER *iter) {
             return;
         }
         BTREE_NODE *node = snode->node->children[snode->index];
-        iter->u.s.stack[iter->u.s.nstack++] = (BTREE_SNODE){ node, node->len };
-        snode = &iter->u.s.stack[iter->u.s.nstack-1];
+        iter->stack[iter->nstack++] = (BTREE_SNODE){ node, node->len };
+        snode = &iter->stack[iter->nstack-1];
     }
 }
 
 // Move iterator cursor to the next item.
 // REQUIRED: iter_valid()
 BTREE_INLINE
-static void BTREE_SYM(iter_next)(BTREE_ITER *iter) {
+static void BTREE_SYM(iter_next)(BTREE_ITERI *iter) {
     BTREE_ASSERT(BTREE_SYM(iter_valid)(iter));
-    if (iter->kind == BTREE_SCAN) {
+    BTREE_SNODE *snode = &iter->stack[iter->nstack-1];
+    if (iter->kind == BTREE_ISCAN && snode->node->isleaf && 
+        snode->index+1 < snode->node->len)
+    {
         // Fastpath for forward scanning iterators iter_seek and iter_scan,
         // where the next item is in a leaf. Fallback to the function call.
-        BTREE_SNODE *snode = &iter->u.s.stack[iter->u.s.nstack-1];
-        if (snode->node->isleaf && snode->index+1 < snode->node->len) {
-            snode->index++;
-        } else {
+        snode->index++;
+    } else {
+        if (iter->kind == BTREE_ISCAN) {
             BTREE_SYM(iter_next_asc)(iter);
+        } else if (iter->kind == BTREE_ISCANDESC) {
+            BTREE_SYM(iter_next_desc)(iter);
         }
-    } else if (iter->kind == BTREE_SCANDESC) {
-        BTREE_SYM(iter_next_desc)(iter);
     }
 }
 
 // Moves iterator to first item and resets the status
-static void BTREE_SYM(iter_scan)(BTREE_ITER *iter) {
-    if (!iter) {
-        return;
-    }
-    BTREE_SYM(iter_reset)(iter, BTREE_SCAN);
+static void BTREE_SYM(iter_scan)(BTREE_ITERI *iter) {
+    BTREE_SYM(iter_reset)(iter, BTREE_ISCAN);
     if (!*iter->root) {
         iter->valid = false;
         return;
@@ -3374,7 +3394,7 @@ static void BTREE_SYM(iter_scan)(BTREE_ITER *iter) {
     }
     BTREE_NODE *node = *iter->root;
     while (1) {
-        iter->u.s.stack[iter->u.s.nstack++] = (BTREE_SNODE){ node, 0 };
+        iter->stack[iter->nstack++] = (BTREE_SNODE){ node, 0 };
         if (node->isleaf) {
             return;
         }
@@ -3388,11 +3408,8 @@ static void BTREE_SYM(iter_scan)(BTREE_ITER *iter) {
 }
 
 // Moves iterator to last item and resets the status
-static void BTREE_SYM(iter_scan_desc)(BTREE_ITER *iter) {
-    if (!iter) {
-        return;
-    }
-    BTREE_SYM(iter_reset)(iter, BTREE_SCANDESC);
+static void BTREE_SYM(iter_scan_desc)(BTREE_ITERI *iter) {
+    BTREE_SYM(iter_reset)(iter, BTREE_ISCANDESC);
     if (!*iter->root) {
         iter->valid = false;
         return;
@@ -3404,9 +3421,9 @@ static void BTREE_SYM(iter_scan_desc)(BTREE_ITER *iter) {
     }
     BTREE_NODE *node = *iter->root;
     while (1) {
-        iter->u.s.stack[iter->u.s.nstack++] = (BTREE_SNODE){ node, node->len };
+        iter->stack[iter->nstack++] = (BTREE_SNODE){ node, node->len };
         if (node->isleaf) {
-            iter->u.s.stack[iter->u.s.nstack-1].index--;
+            iter->stack[iter->nstack-1].index--;
             return;
         }
         if (iter->mut && !BTREE_SYM(cow)(&node->children[node->len],
@@ -3420,16 +3437,13 @@ static void BTREE_SYM(iter_scan_desc)(BTREE_ITER *iter) {
     }
 }
 
-static void BTREE_SYM(iter_seek)(BTREE_ITER *iter, BTREE_ITEM key) {
-    if (!iter) {
-        return;
-    }
+static void BTREE_SYM(iter_seek)(BTREE_ITERI *iter, BTREE_ITEM key) {
 #ifdef BTREE_NOORDER
     (void)iter, (void)key;
     iter->valid = false;
     iter->status = BTREE_UNSUPPORTED;
 #else
-    BTREE_SYM(iter_reset)(iter, BTREE_SCAN);
+    BTREE_SYM(iter_reset)(iter, BTREE_ISCAN);
     if (!*iter->root) {
         iter->valid = false;
         return;
@@ -3444,12 +3458,12 @@ static void BTREE_SYM(iter_seek)(BTREE_ITER *iter, BTREE_ITEM key) {
     while (1) {
         int found;
         int i = BTREE_SYM(search)(node, key, iter->udata, &found, depth);
-        iter->u.s.stack[iter->u.s.nstack++] = (BTREE_SNODE){ node, i };
+        iter->stack[iter->nstack++] = (BTREE_SNODE){ node, i };
         if (found) {
             return;
         }
         if (node->isleaf) {
-            iter->u.s.stack[iter->u.s.nstack-1].index--;
+            iter->stack[iter->nstack-1].index--;
             BTREE_SYM(iter_next)(iter);
             return;
         }
@@ -3464,11 +3478,8 @@ static void BTREE_SYM(iter_seek)(BTREE_ITER *iter, BTREE_ITEM key) {
 #endif
 }
 
-static void BTREE_SYM(iter_seek_at)(BTREE_ITER *iter, size_t index) {
-    if (!iter) {
-        return;
-    }
-    BTREE_SYM(iter_reset)(iter, BTREE_SCAN);
+static void BTREE_SYM(iter_seek_at)(BTREE_ITERI *iter, size_t index) {
+    BTREE_SYM(iter_reset)(iter, BTREE_ISCAN);
     if (!*iter->root) {
         iter->valid = false;
         return;
@@ -3480,14 +3491,14 @@ static void BTREE_SYM(iter_seek_at)(BTREE_ITER *iter, size_t index) {
     }
     BTREE_NODE *node = *iter->root;
     while (1) {
-        iter->u.s.stack[iter->u.s.nstack++] = (BTREE_SNODE){ node, 0 };
+        iter->stack[iter->nstack++] = (BTREE_SNODE){ node, 0 };
         if (node->isleaf) {
             if (index >= (size_t)node->len) {
-                iter->u.s.stack[iter->u.s.nstack-1].index = node->len;
+                iter->stack[iter->nstack-1].index = node->len;
             } else {
-                iter->u.s.stack[iter->u.s.nstack-1].index = index;
+                iter->stack[iter->nstack-1].index = index;
             }
-            iter->u.s.stack[iter->u.s.nstack-1].index--;
+            iter->stack[iter->nstack-1].index--;
             BTREE_SYM(iter_next)(iter);
             return;
         }
@@ -3501,7 +3512,7 @@ static void BTREE_SYM(iter_seek_at)(BTREE_ITER *iter, size_t index) {
             }
             index -= count + 1;
         }
-        iter->u.s.stack[iter->u.s.nstack-1].index = i;
+        iter->stack[iter->nstack-1].index = i;
         if (found) {
             return;
         }
@@ -3514,11 +3525,8 @@ static void BTREE_SYM(iter_seek_at)(BTREE_ITER *iter, size_t index) {
     }
 }
 
-static void BTREE_SYM(iter_seek_at_desc)(BTREE_ITER *iter, size_t index) {
-    if (!iter) {
-        return;
-    }
-    BTREE_SYM(iter_reset)(iter, BTREE_SCANDESC);
+static void BTREE_SYM(iter_seek_at_desc)(BTREE_ITERI *iter, size_t index) {
+    BTREE_SYM(iter_reset)(iter, BTREE_ISCANDESC);
     if (!*iter->root) {
         iter->valid = false;
         return;
@@ -3530,12 +3538,12 @@ static void BTREE_SYM(iter_seek_at_desc)(BTREE_ITER *iter, size_t index) {
     }
     BTREE_NODE *node = *iter->root;
     while (1) {
-        iter->u.s.stack[iter->u.s.nstack++] = (BTREE_SNODE){ node, 0 };
+        iter->stack[iter->nstack++] = (BTREE_SNODE){ node, 0 };
         if (node->isleaf) {
             if (index >= (size_t)node->len) {
-                iter->u.s.stack[iter->u.s.nstack-1].index = node->len-1;
+                iter->stack[iter->nstack-1].index = node->len-1;
             } else {
-                iter->u.s.stack[iter->u.s.nstack-1].index = index;
+                iter->stack[iter->nstack-1].index = index;
             }
             return;
         }
@@ -3549,7 +3557,7 @@ static void BTREE_SYM(iter_seek_at_desc)(BTREE_ITER *iter, size_t index) {
             }
             index -= count + 1;
         }
-        iter->u.s.stack[iter->u.s.nstack-1].index = i;
+        iter->stack[iter->nstack-1].index = i;
         if (found) {
             return;
         }
@@ -3564,15 +3572,12 @@ static void BTREE_SYM(iter_seek_at_desc)(BTREE_ITER *iter, size_t index) {
 
 // Get the current iterator item.
 // REQUIRES: iter_valid() and item != NULL
-static void BTREE_SYM(iter_item)(BTREE_ITER *iter, BTREE_ITEM *item) {
-    BTREE_SNODE *snode = &iter->u.s.stack[iter->u.s.nstack-1];
+static void BTREE_SYM(iter_item)(BTREE_ITERI *iter, BTREE_ITEM *item) {
+    BTREE_SNODE *snode = &iter->stack[iter->nstack-1];
     *item = snode->node->items[snode->index];
 }
 
-static void BTREE_SYM(iter_seek_desc)(BTREE_ITER *iter, BTREE_ITEM key) {
-    if (!iter) {
-        return;
-    }
+static void BTREE_SYM(iter_seek_desc)(BTREE_ITERI *iter, BTREE_ITEM key) {
 #ifdef BTREE_NOORDER
     (void)iter, (void)key;
     iter->valid = false;
@@ -3590,7 +3595,7 @@ static void BTREE_SYM(iter_seek_desc)(BTREE_ITER *iter, BTREE_ITEM key) {
             BTREE_SYM(iter_next_desc)(iter);
         }
     }
-    iter->kind = BTREE_SCANDESC;
+    iter->kind = BTREE_ISCANDESC;
 #endif
 }
 
@@ -3638,7 +3643,6 @@ static inline void BTREE_SYM(all_sym_calls)(void) {
     (void)BTREE_SYM(less);
     (void)BTREE_SYM(iter_init);
     (void)BTREE_SYM(iter_init_mut);
-    (void)BTREE_SYM(iter_release);
     (void)BTREE_SYM(iter_valid);
     (void)BTREE_SYM(iter_status);
     (void)BTREE_SYM(iter_seek);
@@ -3662,6 +3666,8 @@ static inline void BTREE_SYM(all_sym_calls)(void) {
     (void)BTREE_SYM(seek_at_mut);
     (void)BTREE_SYM(seek_at_desc_mut);
     (void)BTREE_SYM(shared);
+    (void)BTREE_SYM(item_copy);
+    (void)BTREE_SYM(item_free);
 }
 
 static inline void BTREE_SYM(all_api_calls)(void) {
@@ -3707,7 +3713,6 @@ static inline void BTREE_SYM(all_api_calls)(void) {
     (void)BTREE_API(less);
     (void)BTREE_API(iter_init);
     (void)BTREE_API(iter_init_mut);
-    (void)BTREE_API(iter_release);
     (void)BTREE_API(iter_valid);
     (void)BTREE_API(iter_status);
     (void)BTREE_API(iter_seek);
@@ -3909,60 +3914,57 @@ bool BTREE_API(less)(BTREE_ITEM a, BTREE_ITEM b, void *udata) {
     return BTREE_SYM(less)(a, b, udata);
 }
 
-void BTREE_API(iter_init)(BTREE_NODE **root, BTREE_ITER **iter, void *udata) {
-    BTREE_SYM(iter_init)(root, iter, udata);
+void BTREE_API(iter_init)(BTREE_NODE **root, BTREE_ITER *iter, void *udata) {
+    BTREE_SYM(iter_init)(root, (void*)iter, udata);
 }
 
-void BTREE_API(iter_init_mut)(BTREE_NODE **root, BTREE_ITER **iter, void *udata) {
-    BTREE_SYM(iter_init_mut)(root, iter, udata);
+void BTREE_API(iter_init_mut)(BTREE_NODE **root, BTREE_ITER *iter, void *udata)
+{
+    BTREE_SYM(iter_init_mut)(root, (void*)iter, udata);
 }
 
 int BTREE_API(iter_status)(BTREE_ITER *iter) {
-    return BTREE_SYM(iter_status)(iter);
+    return BTREE_SYM(iter_status)((void*)iter);
 }
 
 bool BTREE_API(iter_valid)(BTREE_ITER *iter) {
-    return BTREE_SYM(iter_valid)(iter);
-}
-
-void BTREE_API(iter_release)(BTREE_ITER *iter) {
-    BTREE_SYM(iter_release)(iter);
+    return BTREE_SYM(iter_valid)((void*)iter);
 }
 
 void BTREE_API(iter_seek)(BTREE_ITER *iter, BTREE_ITEM key) {
-    BTREE_SYM(iter_seek)(iter, key);
+    BTREE_SYM(iter_seek)((void*)iter, key);
 }
 
 void BTREE_API(iter_seek_at)(BTREE_ITER *iter, size_t index) {
-    BTREE_SYM(iter_seek_at)(iter, index);
+    BTREE_SYM(iter_seek_at)((void*)iter, index);
 }
 
 void BTREE_API(iter_seek_at_desc)(BTREE_ITER *iter, size_t index) {
-    BTREE_SYM(iter_seek_at_desc)(iter, index);
+    BTREE_SYM(iter_seek_at_desc)((void*)iter, index);
 }
 
 void BTREE_API(iter_seek_desc)(BTREE_ITER *iter, BTREE_ITEM key) {
-    BTREE_SYM(iter_seek_desc)(iter, key);
+    BTREE_SYM(iter_seek_desc)((void*)iter, key);
 }
 
 void BTREE_API(iter_scan)(BTREE_ITER *iter) {
-    BTREE_SYM(iter_scan)(iter);
+    BTREE_SYM(iter_scan)((void*)iter);
 }
 
 void BTREE_API(iter_scan_desc)(BTREE_ITER *iter) {
-    BTREE_SYM(iter_scan_desc)(iter);
+    BTREE_SYM(iter_scan_desc)((void*)iter);
 }
 
 void BTREE_API(iter_next)(BTREE_ITER *iter) {
-    BTREE_SYM(iter_next)(iter);
+    BTREE_SYM(iter_next)((void*)iter);
 }
 
 void BTREE_API(iter_item)(BTREE_ITER *iter, BTREE_ITEM *item) {
-    BTREE_SYM(iter_item)(iter, item);
+    BTREE_SYM(iter_item)((void*)iter, item);
 }
 
-int BTREE_API(scan)(BTREE_NODE **root, bool(*iter)(BTREE_ITEM item, void *udata),
-    void *udata)
+int BTREE_API(scan)(BTREE_NODE **root, bool(*iter)(BTREE_ITEM item,
+    void *udata), void *udata)
 {
     return BTREE_SYM(scan)(root, iter, udata);
 }
@@ -3973,8 +3975,8 @@ int BTREE_API(scan_desc)(BTREE_NODE **root, bool(*iter)(BTREE_ITEM item,
     return BTREE_SYM(scan_desc)(root, iter, udata);
 }
 
-int BTREE_API(seek)(BTREE_NODE **root, BTREE_ITEM key, bool(*iter)(BTREE_ITEM item,
-    void *udata), void *udata)
+int BTREE_API(seek)(BTREE_NODE **root, BTREE_ITEM key,
+    bool(*iter)(BTREE_ITEM item, void *udata), void *udata)
 {
     return BTREE_SYM(seek)(root, key, iter, udata);
 }
@@ -4036,78 +4038,82 @@ int BTREE_API(seek_desc_mut)(BTREE_NODE **root, BTREE_ITEM key,
 #endif // BTREE_HEADER
 
 // undefine everything
-// use `gcc -dM -E <source>` to help find leftover BTREE_* defines
-#undef BTREE_COW
-#undef BTREE_KEY
-#undef BTREE_KEYTYPE
-#undef BTREE_NOTFOUND
-#undef BTREE_NOPATHHINT
-#undef BTREE_NODE
-#undef BTREE_ASSERT
-#undef BTREE_MINITEMS
-#undef BTREE_NOINLINE
-#undef BTREE_FREE
-#undef BTREE_ITEM
-#undef BTREE_REPLACED
-#undef BTREE_SCANDESC
-#undef BTREE_CC
-#undef BTREE_C
-#undef BTREE_PUSHFRONT
-#undef BTREE_OUTOFORDER
-#undef BTREE_NOATOMICS
-#undef BTREE_BSEARCH
-#undef BTREE_EXTERN
-#undef BTREE_MAP
-#undef BTREE_SYM
-#undef BTREE_UNSUPPORTED
-#undef BTREE_POPBACK
-#undef BTREE_INSERTED
-#undef BTREE_ITEMCOPY
-#undef BTREE_MAXHEIGHT
-#undef BTREE_MUSTSPLIT
-#undef BTREE_ITEMFREE
-#undef BTREE_MAXITEMS
-#undef BTREE_KEYED
-#undef BTREE_NOMEM
-#undef BTREE_PITEM
-#undef BTREE_REPAT
-#undef BTREE_COPIED
-#undef BTREE_DELKEY
-#undef BTREE_SCAN
-#undef BTREE_TYPE
+// use `grep -oE '[a-z_A-Z]+' btree.h | sort -u | grep BTREE_` to help find
+// leftover BTREE_* defines
+#undef BTREE_
 #undef BTREE_API
-#undef BTREE_POPFRONT
-#undef BTREE_PUSHBACK
+#undef BTREE_ASSERT
+#undef BTREE_BRANCH_SIZE
+#undef BTREE_BSEARCH
+#undef BTREE_BTREE
+#undef BTREE_C
+#undef BTREE_CC
+#undef BTREE_COMPARE
+#undef BTREE_COPIED
+#undef BTREE_COUNTED
+#undef BTREE_COW
+#undef BTREE_DELAT
+#undef BTREE_DELETED
+#undef BTREE_DELKEY
+#undef BTREE_DSIZE
+#undef BTREE_EXTERN
+#undef BTREE_FANOUT
+#undef BTREE_FANOUTUSED
+#undef BTREE_FINISHED
+#undef BTREE_FOUND
+#undef BTREE_FREE
+#undef BTREE_HEADER
+#undef BTREE_INLINE
+#undef BTREE_INSAT
+#undef BTREE_INSERTED
+#undef BTREE_INSITEM
+#undef BTREE_ISCAN
+#undef BTREE_ISCANDESC
+#undef BTREE_ITEM
+#undef BTREE_ITEMCOPY
+#undef BTREE_ITEMFREE
+#undef BTREE_ITER
+#undef BTREE_ITERI
+#undef BTREE_KEY
+#undef BTREE_KEYED
+#undef BTREE_KEYTYPE
+#undef BTREE_LEAF_SIZE
+#undef BTREE_LESS
+#undef BTREE_LIBRARY_UUID
 #undef BTREE_LINEAR
 #undef BTREE_MALLOC
-#undef BTREE_PQUEUE
-#undef BTREE_BTREE
-#undef BTREE_DELAT
-#undef BTREE_DSIZE
-#undef BTREE_REALLOC
-#undef BTREE_STOPPED
-#undef BTREE_VALUETYPE
-#undef BTREE_FINISHED
-#undef BTREE_FANOUTUSED
-#undef BTREE_POPMAX
-#undef BTREE_VALUE
-#undef BTREE_HEADER
-#undef BTREE_NOORDER
-#undef BTREE_SNODE
-#undef BTREE_PATHHINT
-#undef BTREE_DELETED
-#undef BTREE_INSITEM
-#undef BTREE_FANOUT
-#undef BTREE_INLINE
-#undef BTREE_ITER
-#undef BTREE_LESS
-#undef BTREE_NAME
-#undef BTREE_COMPARE
-#undef BTREE_COUNTED
-#undef BTREE_FOUND
-#undef BTREE_INSAT
+#undef BTREE_MAP
+#undef BTREE_MAXHEIGHT
+#undef BTREE_MAXITEMS
 #undef BTREE_MAYBELESSEQUAL
-#undef BTREE_SOURCE
-#undef BTREE_LEAF_SIZE
-#undef BTREE_BRANCH_SIZE
+#undef BTREE_MINITEMS
+#undef BTREE_MUSTSPLIT
+#undef BTREE_NAME
+#undef BTREE_NOATOMICS
+#undef BTREE_NODE
 #undef BTREE_NODE_SIZE
+#undef BTREE_NOINLINE
+#undef BTREE_NOMEM
+#undef BTREE_NOORDER
+#undef BTREE_NOPATHHINT
+#undef BTREE_NOTFOUND
+#undef BTREE_OUTOFORDER
+#undef BTREE_PATHHINT
+#undef BTREE_PITEM
+#undef BTREE_POPBACK
+#undef BTREE_POPFRONT
+#undef BTREE_POPMAX
+#undef BTREE_PQUEUE
+#undef BTREE_PUSHBACK
+#undef BTREE_PUSHFRONT
+#undef BTREE_REALLOC
+#undef BTREE_REPAT
+#undef BTREE_REPLACED
+#undef BTREE_SNODE
+#undef BTREE_SOURCE
+#undef BTREE_STOPPED
+#undef BTREE_SYM
+#undef BTREE_TYPE
+#undef BTREE_UNSUPPORTED
+#undef BTREE_VALUE
+#undef BTREE_VALUETYPE
