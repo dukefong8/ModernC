@@ -1,0 +1,11 @@
+// EXPECT: discards .*qualifiers|incompatible pointer types
+// A mutable slice must not copy a const array.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+ints use(Arena* arena) {
+  const int data[3] = {0};
+  ints s = SliceFromArray(arena, data);
+  return s;
+}

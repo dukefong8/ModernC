@@ -1,0 +1,59 @@
+// SliceFromArray accepts real, constant-extent C arrays of complete types.
+#include "arena.h"
+
+struct Point { int x, y; };
+struct __attribute__((aligned(64))) Wide { double v[2]; };
+
+typedef Slice(int) ints;
+typedef Slice(char) chars;
+typedef Slice(const int) cints;
+typedef Slice(struct Point) points;
+typedef Slice(const char*) strs;
+typedef Slice(struct Wide) wides;
+
+int use(Arena* arena) {
+  int data[] = {10, 20, 30};
+  ints s = {};
+  SliceFromArray(arena, s, data);
+
+  char bytes[8] = {0};
+  chars b = {};
+  SliceFromArray(arena, b, bytes);
+
+  const int cd[] = {1, 2};
+  cints cs = {};
+  SliceFromArray(arena, cs, cd);
+
+  int mutable_data[] = {7};
+  cints cm = {};
+  SliceFromArray(arena, cm, mutable_data);
+
+  struct Point pts[] = {{1, 2}, {3, 4}};
+  points ps = {};
+  SliceFromArray(arena, ps, pts);
+
+  const char* words[] = {"a", "bc"};
+  strs ws = {};
+  SliceFromArray(arena, ws, words);
+
+  struct Wide wide[] = {{{1, 2}}};
+  wides w = {};
+  SliceFromArray(arena, w, wide);
+
+  enum { N = 5 };
+  int fixed[N] = {0};
+  ints fs = {};
+  SliceFromArray(arena, fs, fixed);
+
+  int one[] = {42};
+  ints os = {};
+  SliceFromArray(arena, os, one);
+
+  ints lit = SliceFromArray(arena, ((int[]){4, 5, 6}));
+
+  Push(arena, s, 40);
+
+  return s->data[0] + b->data[0] + cs->data[0] + cm->data[0] + ps->data[0].x +
+         (int)w->data[0].v[0] + os->data[0] + lit->data[0] + (int)ws->len +
+         (int)fs->len;
+}

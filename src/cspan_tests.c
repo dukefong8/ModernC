@@ -58,12 +58,12 @@ UTEST(cspan, slice2) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  cspan_ints values = {0};
+  cspan_ints values = {};
   for (int i = 0; i < 10 * 20 * 30; i++) {
-    Push(arena, &values, i);
+    Push(arena, values, i);
   }
 
-  Span3 ms3 = cspan_md(values.data, 10, 20, 30);
+  Span3 ms3 = cspan_md(values->data, 10, 20, 30);
   ms3 = cspan_slice(&ms3, Span3, {1, 4}, {3, 7}, {20, 24});
 
   int sum = 0;
@@ -132,19 +132,19 @@ UTEST_F_SETUP(cspan_cube) {
   ASSERT_TRUE(utest_fixture->mem != NULL);
   utest_fixture->arena = arena_init(utest_fixture->mem, MB(4));
 
-  Reserve(&utest_fixture->arena, &utest_fixture->values, N);
+  Reserve(&utest_fixture->arena, utest_fixture->values, N);
   for (int i = 0; i < N; i++) {
-    PushUnchecked(&utest_fixture->values, i + 1);
+    PushUnchecked(utest_fixture->values, i + 1);
   }
 
-  Span3 ms3 = cspan_md(utest_fixture->values.data, CUBE, CUBE, CUBE);
+  Span3 ms3 = cspan_md(utest_fixture->values->data, CUBE, CUBE, CUBE);
 
-  Reserve(&utest_fixture->arena, &utest_fixture->tiles, TILES);
+  Reserve(&utest_fixture->arena, utest_fixture->tiles, TILES);
   for (int i = 0; i < CUBE; i += TSIZE) {
     for (int j = 0; j < CUBE; j += TSIZE) {
       for (int k = 0; k < CUBE; k += TSIZE) {
         Span3 tile = cspan_slice(&ms3, Span3, {i, i + TSIZE}, {j, j + TSIZE}, {k, k + TSIZE});
-        PushUnchecked(&utest_fixture->tiles, tile);
+        PushUnchecked(utest_fixture->tiles, tile);
       }
     }
   }
@@ -156,17 +156,17 @@ UTEST_F_TEARDOWN(cspan_cube) {
 }
 
 UTEST_F(cspan_cube, slice3) {
-  int64_t n = utest_fixture->values.len;
+  int64_t n = utest_fixture->values->len;
   int64_t sum = 0;
 
   // Iterate each 3d tile in sequence.
-  for (isize t = 0; t < utest_fixture->tiles.len; t++) {
-    Span3 tile = utest_fixture->tiles.data[t];
+  for (isize t = 0; t < utest_fixture->tiles->len; t++) {
+    Span3 tile = utest_fixture->tiles->data[t];
     for (Span3_iter it = Span3_begin(&tile); it.ref; Span3_next(&it)) {
       sum += *it.ref;
     }
   }
 
-  ASSERT_EQ(utest_fixture->tiles.len, 4096);
+  ASSERT_EQ(utest_fixture->tiles->len, 4096);
   ASSERT_EQ(sum, n * (n + 1) / 2);
 }

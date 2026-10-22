@@ -1,0 +1,11 @@
+// EXPECT: array|incompatible|invalid
+// A FixedSlice handle is not implicitly a Slice.
+#include "arena.h"
+
+typedef Slice(int) ints;
+typedef FixedSlice(int) fints;
+
+ints use(fints b) {
+  ints s = b;
+  return s;
+}

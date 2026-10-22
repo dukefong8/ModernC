@@ -1,0 +1,32 @@
+// SliceFromArray copies a C array into arena storage; the result is movable.
+#include "arena.h"
+
+struct Point { int x, y; };
+
+typedef Slice(int) ints;
+typedef Slice(const int) cints;
+typedef Slice(struct Point) points;
+
+void copy_expr(Arena* arena, ints out) {
+  int data[] = {1, 2, 3};
+  SliceFromArray(arena, out, data);
+  Push(arena, out, 4);
+}
+
+int use(Arena* arena) {
+  int data[] = {4, 5, 6};
+  ints s = {};
+  SliceFromArray(arena, s, data);
+
+  const int cd[] = {7, 8};
+  cints cs = {};
+  SliceFromArray(arena, cs, cd);
+
+  struct Point pts[] = {{1, 2}, {3, 4}};
+  points ps = {};
+  SliceFromArray(arena, ps, pts);
+
+  ints lit = SliceFromArray(arena, ((int[]){9, 10}));
+
+  return s->data[0] + cs->data[0] + ps->data[1].x + lit->data[1];
+}

@@ -1,0 +1,14 @@
+// EXPECT: slice element type does not match the array
+// The typed destination form checks the destination element type
+// independently of any warning flags, so this is rejected even without
+// -Werror.
+#include "arena.h"
+
+typedef Slice(double) doubles;
+
+int use(Arena* arena) {
+  int data[3] = {0};
+  doubles s = {0};
+  SliceFromArray(arena, s, data);
+  return (int)s->len;
+}

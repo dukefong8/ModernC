@@ -1,0 +1,11 @@
+// EXPECT: discards .*qualifiers|incompatible pointer types
+// The typed destination form must not copy a const array into mutable storage.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+void use(Arena* arena) {
+  const int data[3] = {0};
+  ints s = {0};
+  SliceFromArray(arena, s, data);
+}

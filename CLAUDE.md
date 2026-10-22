@@ -59,25 +59,43 @@ selects copy-init when the 4th arg is a pointer), `Scratch(arena)` for scope-res
 `Slice(T)` + `Push`/`PushUnchecked`/`Reserve`/`Clone`, and the `astr` length-prefixed string
 family (`S(s)` for printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
 
-`Push(arena, &s, v)` is the way to append: it stores the value it is given, so call sites spell the
+`Push(arena, s, v)` is the way to append: it stores the value it is given, so call sites spell the
 element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
 (`-Wpointer-type-mismatch`), not a conversion. An element whose contents are produced rather than
 known up front is pushed as a placeholder and filled through the returned pointer; `New`
-allocates a standalone object, it does not append. `Reserve(arena, &s, n)` grows capacity up front
-so a batch of pushes never steps it, and `PushUnchecked(&s, v)` — Push without the bounds check,
+allocates a standalone object, it does not append. `Reserve(arena, s, n)` grows capacity up front
+so a batch of pushes never steps it, and `PushUnchecked(s, v)` — Push without the bounds check,
 and without the arena argument because it never allocates — fills that reserved room; debug builds
-trap when the room runs out. Elements are read and written through `s.data[i]` directly.
+trap when the room runs out. Elements are read and written through `s->data[i]` directly.
 
-`Slice(T)` is an untagged struct (`T *data`, `len`, `cap`): `Slice(struct Point)` and
-`Slice(const char*)` work as written, and repeat expansions don't collide on a tag;
-`data` stays typed, so `s.data[i]` is checked element access. Each expansion is a distinct
-anonymous type (typedef to pass one across a function boundary), and the type is structural
-rather than nominal: `Push` accepts any struct shaped like this one, and the element type is
-whatever `data` points at. `Push`'s `(1 ? &val : s->data)` ternary guard is the compile-time type
-check, and it is strict about types.
+`Slice(T)` is a one-element array of a descriptor union (`T *data`, `len`, `cap`) built
+with `__typeof__`: `Slice(struct Point)` and `Slice(const char*)` work as written, and repeat
+expansions don't collide on a tag. The array wrapper enforces pass-by-reference: a function
+parameter of slice type decays to a pointer to the caller's descriptor, `ints t = s` and `t = s`
+are compile errors, and elements are read through `s->data[i]`. `SliceMoveAssign` moves one
+descriptor into another; explicit raw copies and struct copies alias silently. `SliceFromArray(arena, array)` copies a C array into arena storage; there is no
+zero-copy caller-backed view. Classes are separate types: `FixedSlice` is fixed-capacity only,
+`TipSlice` is the tip-resizable non-moving class (`Push`/`Reserve(arena, t, ...)` grow only when
+`SliceAtTip` holds and preserve element pointers), and ordinary `Slice` is movable. Arrays cannot
+be returned by value, so `Clone` writes into a destination: `Clone(arena, out, src[, start[, len]])`.
+
+Copy policy: never copy a struct or union that contains a slice descriptor by value. C blocks
+`t = s` and `ints t = s` for the slice itself, but struct assignment, struct initialization,
+by-value pass/return of a slice-holding struct, `memcpy`, and explicit `copy[0] = s[0]` still
+compile and leave two descriptors sharing one backing block. Pass slice-holding structs by
+pointer, use `Clone` for element copies, and `SliceMoveAssign` for descriptor moves. There is no
+runtime guard for these aliases; ASan generally will not catch them because relocation does not
+free the old arena block.
 
 The layout must stay identical to `SliceInternal`, which `arena_slice_reserve` memcpys —
 `arena_tests.c` static-asserts the offsets, and `make typecheck` holds the compile-time fixtures.
+Slice macros exist where C needs a type name, `_kind` dispatch, an initializer, or a return
+value. Only capacity growth is type-erased (`arena_slice_reserve`, `arena_slice_grow`,
+`arena_at_tip`); slot computation, typed stores, and descriptor updates stay inline in the
+macros. Statement macros use `do { } while (0)`; value-returning macros use a statement
+expression only where required. Each operation macro binds its slice/value/capacity arguments
+once (checks are unevaluated); `arena` is passed through and used twice on the tip-growth
+path, and `SliceAtTip` evaluates its slice argument multiple times.
 
 **Allocation order is semantically load-bearing.** Several "optimizations" are really contracts
 with the caller: `arena_free` only reclaims when the pointer is at the bump tip; `Push` grows in

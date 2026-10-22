@@ -1,0 +1,10 @@
+// EXPECT: array argument must be a C array, not a pointer
+// A pointer to an array is still not an array: there is no owned extent.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+ints use(Arena* arena, int (*p)[3]) {
+  ints s = SliceFromArray(arena, p);
+  return s;
+}

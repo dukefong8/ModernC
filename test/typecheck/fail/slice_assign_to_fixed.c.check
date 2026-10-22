@@ -1,0 +1,10 @@
+// EXPECT: no member named .fixed.|array|not assignable|incompatible
+// A movable Slice is not implicitly a fixed payload.
+#include "arena.h"
+
+typedef Slice(int) ints;
+typedef FixedSlice(int) fints;
+
+void use(fints b, ints s) {
+  b->fixed = s;
+}

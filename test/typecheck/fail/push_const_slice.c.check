@@ -1,0 +1,9 @@
+// EXPECT: read-only|assignment of read-only
+// The growable Push path rejects a const element type, not only the fixed one.
+#include "arena.h"
+
+typedef Slice(const int) cints;
+
+void use(Arena* arena, cints s) {
+  Push(arena, s, 1);
+}

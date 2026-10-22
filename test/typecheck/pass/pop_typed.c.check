@@ -1,0 +1,21 @@
+// Pop is structural, writes its output parameter, and returns whether it
+// removed an element.
+#include "arena.h"
+
+struct A { int v; };
+
+typedef Slice(int) ints;
+typedef Slice(struct A) as;
+typedef FixedSlice(int) fints;
+
+void use(ints is, as xs, fints bs) {
+  int i = 0;
+  struct A a = {0};
+  int j = 0;
+  if (Pop(is, &i))
+    (void)i;
+  if (Pop(xs, &a))
+    (void)a;
+  if (Pop(bs, &j))
+    (void)j;
+}

@@ -1,10 +1,10 @@
-// EXPECT: pointer type mismatch
+// EXPECT: value type does not match slice element type
 // PushUnchecked keeps Push's type guard: pushing a double into Slice(int) is
 // rejected. The unchecked part is capacity, not element type.
 #include "arena.h"
 
 typedef Slice(int) ints;
 
-void use(ints* s) {
+void use(ints s) {
   PushUnchecked(s, 3.5);
 }

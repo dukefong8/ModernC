@@ -1,0 +1,10 @@
+// EXPECT: read-only|assignment of read-only|discards .*qualifiers
+// Pop copies into a destination, so that destination must be writable.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+void use(ints s) {
+  const int out = 0;
+  Pop(s, &out);
+}

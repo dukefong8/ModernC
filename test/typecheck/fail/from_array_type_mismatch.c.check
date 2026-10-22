@@ -1,0 +1,11 @@
+// EXPECT: incompatible pointer type
+// The array and the slice element type must be the same type.
+#include "arena.h"
+
+typedef Slice(double) doubles;
+
+doubles use(Arena* arena) {
+  int data[3] = {0};
+  doubles s = SliceFromArray(arena, data);
+  return s;
+}

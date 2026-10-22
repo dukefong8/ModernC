@@ -1,6 +1,12 @@
 #include "arena.h"
+#include "cspan.h"
 #include "debug.h"
 #include "utest.h"
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 /* --- Arena init / alloc / reset / release --- */
 
@@ -35,7 +41,8 @@ UTEST(arena, alloc_no_init) {
   byte* p = New(arena, byte, 16, NO_INIT);
   int non_zero = 0;
   for (int i = 0; i < 16; i++) {
-    if (p[i] != 0) non_zero++;
+    if (p[i] != 0)
+      non_zero++;
   }
   ASSERT_TRUE(non_zero > 0);
 }
@@ -244,7 +251,9 @@ UTEST(arena, new_array) {
   ASSERT_EQ(arr[3], 30);
 }
 
-typedef struct { double x, y; } Vec2;
+typedef struct {
+  double x, y;
+} Vec2;
 
 UTEST(arena, new_struct) {
   enum { size = KB(1) };
@@ -263,7 +272,10 @@ UTEST(arena, new_copy_struct) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  typedef struct { int a; int b; } Pair;
+  typedef struct {
+    int a;
+    int b;
+  } Pair;
   Pair src = {.a = 42, .b = 99};
   Pair* dst = New(arena, Pair, 1, &src);
   ASSERT_EQ(dst->a, 42);
@@ -301,500 +313,7 @@ UTEST(arena, free_not_at_tip_is_noop) {
   ASSERT_EQ(arena->cur, cur_before);
 }
 
-/* --- Slice: Push / Clone --- */
-
-typedef Slice(int) ints;
-
-// A second expansion of the same element type: a distinct anonymous type that
-// coexists with `ints` in this translation unit.
-typedef Slice(int) ints_again;
-
-struct Point {
-  int x, y;
-};
-typedef Slice(unsigned int) uints;
-typedef Slice(struct Point) points;
-typedef Slice(const char*) strs;
-
-UTEST(slice, clone_full) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  for (int i = 0; i < 5; i++)
-    Push(arena, &s, i * 10);
-
-  ints copy = Clone(arena, s);
-  ASSERT_EQ(copy.len, 5);
-  for (int i = 0; i < 5; i++)
-    ASSERT_EQ(copy.data[i], i * 10);
-  ASSERT_TRUE(copy.data != s.data);
-}
-
-UTEST(slice, clone_subslice) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  for (int i = 0; i < 10; i++)
-    Push(arena, &s, i);
-
-  ints mid = Clone(arena, s, 3, 4);
-  ASSERT_EQ(mid.len, 4);
-  ASSERT_EQ(mid.data[0], 3);
-  ASSERT_EQ(mid.data[1], 4);
-  ASSERT_EQ(mid.data[2], 5);
-  ASSERT_EQ(mid.data[3], 6);
-}
-
-UTEST(slice, push_grow_many) {
-  enum { size = KB(16) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  for (int i = 0; i < 200; i++)
-    Push(arena, &s, i);
-
-  ASSERT_EQ(s.len, 200);
-  ASSERT_TRUE(s.cap >= 200);
-  for (int i = 0; i < 200; i++)
-    ASSERT_EQ(s.data[i], i);
-
-  // Push returns the new element's address
-  int* p = Push(arena, &s, 999);
-  ASSERT_EQ(*p, 999);
-  ASSERT_TRUE(p == &s.data[200]);
-  ASSERT_EQ(s.len, 201);
-}
-
-/* --- Slice: PushUnchecked (caller-vouched capacity) --- */
-
-UTEST(slice, push_unchecked_fills_reserved) {
-  enum { size = KB(16) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  Reserve(arena, &s, s.len + 200);
-  isize cap = s.cap;
-  byte* cur = arena->cur;
-
-  for (int i = 0; i < 200; i++) {
-    int* p = PushUnchecked(&s, i * 2);
-    ASSERT_TRUE(p == &s.data[i]);
-    ASSERT_EQ(*p, i * 2);
-  }
-
-  ASSERT_EQ(s.len, 200);
-  ASSERT_EQ(s.cap, cap);       // no growth stepped it
-  ASSERT_EQ(arena->cur, cur);  // and nothing allocated at all
-  ASSERT_EQ(s.data[199], 398);
-}
-
-UTEST(slice, push_unchecked_shares_state_with_push) {
-  enum { size = KB(16) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  Reserve(arena, &s, 4);
-  PushUnchecked(&s, 1);
-  PushUnchecked(&s, 2);
-
-  // Checked Push sees the unchecked len and grows past the reserved room.
-  Push(arena, &s, 3);
-  Push(arena, &s, 4);
-  Push(arena, &s, 5);
-  ASSERT_EQ(s.len, 5);
-
-  // The slice now has fresh room again: fill it unchecked.
-  PushUnchecked(&s, 6);
-  ASSERT_EQ(s.len, 6);
-  for (int i = 0; i < 6; i++)
-    ASSERT_EQ(s.data[i], i + 1);
-}
-
-UTEST(slice, push_unchecked_top_up_partially_filled) {
-  enum { size = KB(16) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  for (int i = 0; i < 3; i++)
-    Push(arena, &s, i * 10);
-
-  // s.len + n rooms n more pushes on top of the 3 already held.
-  Reserve(arena, &s, s.len + 100);
-  isize cap = s.cap;
-  byte* cur = arena->cur;
-
-  for (int i = 0; i < 100; i++)
-    PushUnchecked(&s, i);
-
-  ASSERT_EQ(s.len, 103);
-  ASSERT_EQ(s.cap, cap);       // no growth stepped it
-  ASSERT_EQ(arena->cur, cur);  // and nothing allocated at all
-  ASSERT_EQ(s.data[0], 0);
-  ASSERT_EQ(s.data[2], 20);
-  ASSERT_EQ(s.data[102], 99);
-}
-
-UTEST(slice, push_unchecked_adopts_caller_backed) {
-  enum { size = KB(16) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  int stack_data[] = {10, 20, 30, 40, 50};
-  ints s = {.data = stack_data, .len = Countof(stack_data)};
-
-  // s.len + n both adopts the caller buffer and rooms n more pushes: a plain
-  // Reserve(arena, &s, 10) would still leave cap == 0, but s.len + 10 exceeds
-  // len and so moves the slice into the arena.
-  Reserve(arena, &s, s.len + 10);
-  ASSERT_TRUE(s.data != stack_data);
-  ASSERT_EQ(s.len, 5);
-  ASSERT_TRUE(s.cap >= 15);
-
-  byte* cur = arena->cur;
-  for (int i = 0; i < 10; i++)
-    PushUnchecked(&s, i);
-
-  ASSERT_EQ(s.len, 15);
-  ASSERT_EQ(arena->cur, cur);  // nothing allocated at all
-  ASSERT_EQ(s.data[0], 10);
-  ASSERT_EQ(s.data[4], 50);
-  ASSERT_EQ(s.data[14], 9);
-  ASSERT_EQ(stack_data[4], 50);  // caller's buffer untouched
-}
-
-UTEST(slice, reserve_grows_up_front) {
-  enum { size = KB(16) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  Reserve(arena, &s, 200);
-  ASSERT_TRUE(s.cap >= 200);
-  ASSERT_EQ(s.len, 0);
-
-  isize cap = s.cap;
-  for (int i = 0; i < 200; i++)
-    Push(arena, &s, i);
-
-  ASSERT_EQ(s.cap, cap);  // reserved once, grown never
-  ASSERT_EQ(s.len, 200);
-  ASSERT_EQ(s.data[199], 199);
-}
-
-UTEST(slice, reserve_preserves_elements) {
-  enum { size = KB(16) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  for (int i = 0; i < 3; i++)
-    Push(arena, &s, i * 10);
-
-  int* before = s.data;
-  New(arena, int, 64);  // off the arena tip: reserving must copy, not extend
-  Reserve(arena, &s, 100);
-
-  ASSERT_TRUE(s.data != before);
-  ASSERT_EQ(s.len, 3);
-  ASSERT_TRUE(s.cap >= 100);
-  ASSERT_EQ(s.data[0], 0);
-  ASSERT_EQ(s.data[2], 20);
-
-  Push(arena, &s, 30);
-  ASSERT_EQ(s.data[3], 30);
-}
-
-UTEST(slice, reserve_is_grow_only) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  Push(arena, &s, 1);
-
-  isize cap = s.cap;
-  Reserve(arena, &s, 4);  // below current capacity
-  ASSERT_EQ(s.cap, cap);
-  Reserve(arena, &s, 0);
-  ASSERT_EQ(s.cap, cap);
-  ASSERT_EQ(s.len, 1);
-}
-
-UTEST(slice, reserve_at_tip_extends) {
-  enum { size = KB(16) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  for (int i = 0; i < 3; i++)
-    Push(arena, &s, i);
-
-  // At the arena tip, reserving extends the existing block instead of copying.
-  int* data = s.data;
-  Reserve(arena, &s, 100);
-  ASSERT_TRUE(s.data == data);
-  ASSERT_TRUE(s.cap >= 100);
-  ASSERT_EQ(s.len, 3);
-  ASSERT_EQ(s.data[2], 2);
-}
-
-UTEST(slice, reserve_caller_backed) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  int stack_data[] = {1, 2, 3, 4, 5};
-  ints s = {.data = stack_data, .len = Countof(stack_data)};
-
-  // cap == 0: len counts as capacity, so reserving below it must not copy
-  Reserve(arena, &s, 2);
-  ASSERT_TRUE(s.data == stack_data);
-  ASSERT_EQ(s.len, 5);
-
-  // ...and reserving above it adopts the whole slice into the arena
-  Reserve(arena, &s, 100);
-  ASSERT_TRUE(s.data != stack_data);
-  ASSERT_TRUE(s.cap >= 100);
-  ASSERT_EQ(s.len, 5);
-  ASSERT_EQ(s.data[4], 5);
-}
-
-UTEST(slice, clone_empty) {
-  enum { size = KB(1) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  ints copy = Clone(arena, s);
-  ASSERT_EQ(copy.len, 0);
-  ASSERT_TRUE(copy.data == NULL);
-}
-
-UTEST(slice, foreign_buffer_is_valid_slice) {
-  // cap == 0 means "backed by calling code, not the arena": len may exceed cap,
-  // and both Push and Clone must accept it -- adopting the data into the arena
-  // rather than writing through the caller's pointer.
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  int stack_data[] = {2, 3, 42};
-  ints s = {.data = stack_data, .len = Countof(stack_data)};
-
-  ints copy = Clone(arena, s);
-  ASSERT_EQ(copy.len, 3);
-  ASSERT_EQ(copy.data[2], 42);
-
-  Push(arena, &s, 4);
-  ASSERT_EQ(s.len, 4);
-  ASSERT_EQ(s.data[0], 2);
-  ASSERT_EQ(s.data[3], 4);
-  ASSERT_TRUE(s.data != stack_data);  // adopted into the arena
-  ASSERT_EQ(stack_data[2], 42);       // caller's buffer untouched
-}
-
-UTEST(slice, clone_evaluates_args_once) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  for (int i = 0; i < 5; i++)
-    Push(arena, &s, i * 10);
-
-  int calls = 0;
-  ints full = Clone(arena, (calls++, s));
-  ASSERT_EQ(calls, 1);
-  ASSERT_EQ(full.len, 5);
-
-  calls = 0;
-  int start = 2;
-  ints rest = Clone(arena, (calls++, s), start++);
-  ASSERT_EQ(calls, 1);
-  ASSERT_EQ(start, 3);
-  ASSERT_EQ(rest.len, 3);
-  ASSERT_EQ(rest.data[0], 20);
-}
-
-/* --- Slice: typed data, Push --- */
-
-UTEST(slice, multi_token_types) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  // Multi-token element types: struct, unsigned, pointer. Slice(T) spells
-  // them as written, no intermediate typedef needed.
-  points ps = {0};
-  Push(arena, &ps, ((struct Point){1, 2}));
-  Push(arena, &ps, ((struct Point){3, 4}));
-  ASSERT_EQ(ps.len, 2);
-  ASSERT_EQ(ps.data[0].x, 1);
-  ASSERT_EQ(ps.data[0].y, 2);
-  ASSERT_EQ(ps.data[1].x, 3);
-  ASSERT_EQ(ps.data[1].y, 4);
-
-  uints us = {0};
-  Push(arena, &us, 7u);
-  ASSERT_EQ(us.data[0], 7u);
-
-  const char* hello = "hello";
-  strs ss = {0};
-  Push(arena, &ss, hello);
-  ASSERT_EQ(ss.len, 1);
-  ASSERT_TRUE(strcmp(ss.data[0], "hello") == 0);
-}
-
-UTEST(slice, duplicate_expansion) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  // ints and ints_again are the same element type expanded twice at file
-  // scope; each expansion is usable on its own.
-  ints a = {0};
-  ints_again b = {0};
-  Push(arena, &a, 1);
-  Push(arena, &b, 2);
-  ASSERT_EQ(a.len, 1);
-  ASSERT_EQ(b.len, 1);
-  ASSERT_EQ(a.data[0], 1);
-  ASSERT_EQ(b.data[0], 2);
-}
-
-UTEST(slice, push_value_struct) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  points ps = {0};
-  struct Point p = {5, 6};
-  Push(arena, &ps, p);
-
-  ASSERT_EQ(ps.len, 1);
-  ASSERT_EQ(ps.data[0].x, 5);
-  ASSERT_EQ(ps.data[0].y, 6);
-}
-
-/* --- Slice: streaming into a new element --- */
-//
-// Push takes a value, so an element whose contents are *produced* -- read(2),
-// inflate, decode, a struct filled field by field -- is pushed as a placeholder
-// and then filled through the pointer Push returns:
-//
-//   Chunk* c = Push(arena, &cs, (Chunk){0});
-//   c->n = read(fd, c->data, sizeof c->data);
-//
-// Two rules: finish filling before the next Push, and after any growth reach
-// the live element by index (s.data[i]) rather than through a held pointer.
-
-// An element whose contents are produced rather than known up front: a fixed
-// inline buffer plus the number of bytes in use.
-typedef struct {
-  char data[64];
-  int n;
-} Chunk;
-typedef Slice(Chunk) chunks;
-
-// Stands in for a stream producer (read(2), inflate, decode): writes into dst
-// and reports how many bytes it produced.
-static int stream_fill(char* dst, int cap) {
-  int n = Min(cap, 16);
-  for (int i = 0; i < n; i++)
-    dst[i] = (char)('a' + i);
-  return n;
-}
-
-UTEST(slice, build_element_in_place) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  chunks cs = {0};
-
-  // Placeholder, then stream into it: three successive fills, as a decoder
-  // would, each starting where the last stopped.
-  Chunk* c = Push(arena, &cs, (Chunk){0});
-  for (int i = 0; i < 3; i++)
-    c->n += stream_fill(c->data + c->n, (int)sizeof c->data - c->n);
-
-  ASSERT_EQ(cs.len, 1);
-  ASSERT_EQ(cs.data[0].n, 48);
-  ASSERT_EQ(cs.data[0].data[0], 'a');
-  ASSERT_EQ(cs.data[0].data[15], 'a' + 15);
-  ASSERT_EQ(cs.data[0].data[16], 'a');  // second fill started over
-  ASSERT_EQ(cs.data[0].data[47], 'a' + 15);
-}
-
-UTEST(slice, fill_survives_grow) {
-  enum { size = KB(32) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  chunks cs = {0};
-
-  Chunk* c = Push(arena, &cs, (Chunk){0});
-  c->n = 42;
-  memcpy(c->data, "filled before growth", 21);
-
-  // Push the slice off the arena tip, so the growth below cannot extend in
-  // place and has to memmove the elements to fresh storage.
-  New(arena, int, 64);
-  for (int i = 0; i < 100; i++)
-    Push(arena, &cs, (Chunk){0});
-
-  ASSERT_EQ(cs.len, 101);
-  ASSERT_EQ(cs.data[0].n, 42);  // the fill rode along with the move
-  ASSERT_TRUE(strcmp(cs.data[0].data, "filled before growth") == 0);
-  ASSERT_TRUE(c != &cs.data[0]);  // ...while c still names the pre-move copy
-
-  // From here on the live element is reached by index.
-  cs.data[0].data[0] = 'F';
-  ASSERT_EQ(cs.data[0].data[0], 'F');
-}
-
-UTEST(slice, data_is_typed) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  ints s = {0};
-  Push(arena, &s, 7);
-
-  // data is T*, so elements are reachable without a macro or a cast: s.data[i]
-  // is an assignable lvalue and binds to T* directly. Writes to the field are
-  // checked too (-Wincompatible-pointer-types) -- see
-  // test/typecheck/fail/slice_data_wrong_pointer_type.c.check.
-  s.data[0] += 1;
-  ASSERT_EQ(s.data[0], 8);
-
-  s.data[0] = 42;
-  ASSERT_EQ(s.data[0], 42);
-
-  int* p = s.data;
-  ASSERT_TRUE(p == &s.data[0]);
-}
-
-UTEST(slice, layout_zero_overhead) {
-  // Slice(T) must stay byte-identical to the erased layout arena_slice_reserve
-  // memcpys, whatever the element type.
-  _Static_assert(sizeof(ints) == sizeof(SliceInternal), "slice size");
-  _Static_assert(alignof(ints) == alignof(SliceInternal), "slice align");
-  _Static_assert(offsetof(ints, data) == offsetof(SliceInternal, data), "data offset");
-  _Static_assert(offsetof(ints, len) == offsetof(SliceInternal, len), "len offset");
-  _Static_assert(offsetof(ints, cap) == offsetof(SliceInternal, cap), "cap offset");
-  _Static_assert(sizeof(ints) == sizeof(void*) + 2 * sizeof(isize), "three words");
-}
-
-/* --- Countof / size macros --- */
+/* --- c_countof / size macros --- */
 
 UTEST(arena, size_macros) {
   ASSERT_EQ(KB(1), (size_t)1024);
@@ -804,7 +323,7 @@ UTEST(arena, size_macros) {
 
 UTEST(arena, countof) {
   int arr[7];
-  ASSERT_EQ(Countof(arr), 7);
+  ASSERT_EQ(c_countof(arr), 7);
 }
 
 /* --- Multiple allocations are contiguous (bump property) --- */

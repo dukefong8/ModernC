@@ -25,6 +25,12 @@ DEP := $(OBJ:.o=.d)
 WARN = -Wall -Wextra -Wnull-dereference -Wvla -Wformat=2 -Wno-format-nonliteral -Wno-unused-parameter -Wno-unused-function
 SANZ = -fno-common -fno-omit-frame-pointer -fsanitize-trap=unreachable -fsanitize=address,undefined
 
+# Force ASAN stack use-after-return checking; the default mode only enables
+# it through a runtime option. Clang-only; GCC (including cosmocc) rejects it.
+ifeq ($(shell $(CC) --version 2>/dev/null | grep -qi clang && echo yes),yes)
+SANZ += -fsanitize-address-use-after-return=always
+endif
+
 CPPFLAGS += -I./include -D_GNU_SOURCE -DDEFAULT_ARENA_SIZE=4000000000
 CFLAGS   += -MMD -MP $(WARN)
 LDFLAGS  += -lm

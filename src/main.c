@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include "arena.h"
+#include "cspan.h"
 #include "debug.h"
 #include "utest.h"
 UTEST_STATE();
@@ -141,7 +142,7 @@ astr test_astr(Arena arena[static 1]) {
 
 typedef Slice(int64_t) i64s;
 
-i64s test_slice(Arena* arena) {
+static void test_slice(Arena* arena, i64s fibs) {
   ALOG(arena);
   {
     Scratch(arena);
@@ -159,27 +160,26 @@ i64s test_slice(Arena* arena) {
   ALOG(arena);
 
   int64_t data[] = {2, 3, 42};
-  i64s fibs = {.data = data, .len = Countof(data)};
-  fibs = Clone(arena, fibs, 0, 2);
+  SliceFromArray(arena, fibs, data);
+  Clone(arena, fibs, fibs, 0, 2);
   for (int i = 2; i < 9; ++i) {
-    Push(arena, &fibs, fibs.data[i - 2] + fibs.data[i - 1]);
+    Push(arena, fibs, fibs->data[i - 2] + fibs->data[i - 1]);
   }
   ALOG(arena);
   {
     Scratch(arena);
     ALOG(arena);
     for (int i = 9; i < 11; ++i) {
-      Push(arena, &fibs, fibs.data[i - 2] + fibs.data[i - 1]);
+      Push(arena, fibs, fibs->data[i - 2] + fibs->data[i - 1]);
     }
     ALOG(arena);
   }
   ALOG(arena);
   for (int i = 11; i < 29; ++i) {
-    Push(arena, &fibs, fibs.data[i - 2] + fibs.data[i - 1]);
+    Push(arena, fibs, fibs->data[i - 2] + fibs->data[i - 1]);
   }
   ALOG(arena);
 
-  return fibs;
 }
 
 #include "json.h"
@@ -234,83 +234,6 @@ UTEST(interface99, oop) {
   ASSERT_EQ(p, 75);
 }
 
-UTEST(slice, push_fresh) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  i64s s = {0};
-  Push(arena, &s, (int64_t)10);
-  Push(arena, &s, (int64_t)20);
-  Push(arena, &s, (int64_t)30);
-  ASSERT_EQ(s.len, 3);
-  ASSERT_EQ(s.data[0], 10);
-  ASSERT_EQ(s.data[1], 20);
-  ASSERT_EQ(s.data[2], 30);
-}
-
-UTEST(slice, push_after_len_reset) {
-  // Bug 4: {data!=NULL, len=0, cap>0} must not assert
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  i64s s = {0};
-  Push(arena, &s, (int64_t)1);
-  Push(arena, &s, (int64_t)2);
-  ASSERT_EQ(s.len, 2);
-
-  s.len = 0;  // reuse as buffer
-  Push(arena, &s, (int64_t)99);
-  ASSERT_EQ(s.len, 1);
-  ASSERT_EQ(s.data[0], 99);
-  ASSERT_TRUE(s.cap > 0);
-}
-
-UTEST(slice, push_after_cap_reset) {
-  // cap=0 detaches from old storage; Push must allocate fresh and copy
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  i64s s = {0};
-  Push(arena, &s, (int64_t)1);
-  Push(arena, &s, (int64_t)2);
-  Push(arena, &s, (int64_t)3);
-  ASSERT_EQ(s.len, 3);
-
-  int64_t* old_data = s.data;
-  s.cap = 0;
-  Push(arena, &s, (int64_t)4);
-  ASSERT_EQ(s.len, 4);
-  ASSERT_EQ(s.data[0], 1);
-  ASSERT_EQ(s.data[1], 2);
-  ASSERT_EQ(s.data[2], 3);
-  ASSERT_EQ(s.data[3], 4);
-  ASSERT_TRUE(s.data != old_data);  // must have new backing storage
-  ASSERT_TRUE(s.cap >= s.len);
-}
-
-UTEST(slice, clone_and_push) {
-  enum { size = KB(4) };
-  byte mem[size] = {0};
-  Arena arena[] = {arena_init(mem, size)};
-
-  i64s s = {0};
-  Push(arena, &s, (int64_t)1);
-  Push(arena, &s, (int64_t)2);
-  Push(arena, &s, (int64_t)3);
-
-  i64s copy = Clone(arena, s, 0, 2);
-  ASSERT_EQ(copy.len, 2);
-  ASSERT_EQ(copy.data[0], 1);
-  ASSERT_EQ(copy.data[1], 2);
-
-  Push(arena, &copy, (int64_t)42);
-  ASSERT_EQ(copy.len, 3);
-  ASSERT_EQ(copy.data[2], 42);
-}
-
 int main(int argc, const char* argv[]) {
 #ifdef __COSMOCC__
   ShowCrashReports();
@@ -337,12 +260,12 @@ int main(int argc, const char* argv[]) {
   test_pqueue(*arena);
   ALOG(arena);
 
-  i64s fibs = test_slice(arena);
-  fibs.cap = 0;
-  Push(arena, &fibs, (int64_t)0);
+  i64s fibs = {};
+  test_slice(arena, fibs);
+  Push(arena, fibs, (int64_t)0);
   puts(">>>fibs");
-  for (int i = 0; i < fibs.len; ++i)
-    printf("%lld,", (long long)fibs.data[i]);
+  for (int i = 0; i < fibs->len; ++i)
+    printf("%lld,", (long long)fibs->data[i]);
   puts("<<<fibs");
 
   astr s = test_astr(arena);

@@ -1,0 +1,12 @@
+// EXPECT: not compatible with any .*association
+// Same as push_unknown_tag, for Reserve: an unknown tag is a constraint
+// error, not a silent movable reserve.
+#include "arena.h"
+
+typedef struct { unsigned char _; } WrongKind;
+typedef __typeof__(( (union { struct { int *data; long len, cap; }; WrongKind _kind; }[1]){} )) Weird;
+
+void use(Arena* arena) {
+  Weird w = {};
+  Reserve(arena, w, 8);
+}

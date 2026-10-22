@@ -1,20 +1,17 @@
-// PushUnchecked is Push minus the bounds check and the arena argument: the
-// same strict element-type guard, for a slice the caller reserved room in.
+// PushUnchecked is Push minus the bounds check and arena argument.
 #include "arena.h"
 
-struct A {
-  int v;
-};
+struct A { int v; };
 
 typedef Slice(struct A) as;
 typedef Slice(int) ints;
 typedef Slice(const char*) strs;
 
-void use(Arena* arena, as* xs, ints* is, strs* ss) {
+void use(Arena* arena, as xs, ints is, strs ss) {
   Reserve(arena, is, 4);
   int* q = PushUnchecked(is, 42);
   *q += 1;
-  PushUnchecked(is, 43);  // second push still inside the reserved room
+  PushUnchecked(is, 43);
 
   Reserve(arena, xs, 2);
   struct A a = {7};

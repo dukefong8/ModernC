@@ -1,4 +1,4 @@
-// EXPECT: pointer type mismatch
+// EXPECT: value type does not match slice element type
 // Pushing a struct B into a Slice(struct A).
 #include "arena.h"
 
@@ -12,6 +12,6 @@ struct B {
 
 typedef Slice(struct A) as;
 
-void use(Arena* arena, as* xs, struct B b) {
+void use(Arena* arena, as xs, struct B b) {
   Push(arena, xs, b);
 }

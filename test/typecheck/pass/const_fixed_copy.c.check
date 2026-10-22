@@ -1,0 +1,14 @@
+// A const-element FixedSlice clones into a const-element movable Slice.
+#include "arena.h"
+
+typedef Slice(const int) cints;
+typedef FixedSlice(const int) cfints;
+
+int use(Arena* arena) {
+  cfints b = {0};
+  SliceFixed(arena, b, 2);
+
+  cints copy = {};
+  Clone(arena, copy, b);
+  return copy->data[0];
+}

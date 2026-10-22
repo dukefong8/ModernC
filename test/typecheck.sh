@@ -18,8 +18,14 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 CC=${CC:-cc}
-read -r -a CC_CMD <<<"$CC"   # CC may be multi-word ("ccache clang"), as in make
-CFLAGS=(-x c -fsyntax-only -Werror -Wall -Wextra -Wnull-dereference -Wvla -Wformat=2
+read -r -a CC_CMD <<<"$CC"   # CC may be multi-word ("ccache clang", as in make)
+
+# Compile to a temporary object rather than -fsyntax-only: the latter is not
+# portable to cross-compilers such as cosmocc, which still runs its assembly
+# stage and can fail looking for a temporary .s file.
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/modernc-typecheck.XXXXXX")
+trap 'rm -rf "$WORK_DIR"' EXIT
+CFLAGS=(-x c -c -o "$WORK_DIR/check.o" -Werror -Wall -Wextra -Wnull-dereference -Wvla -Wformat=2
         -Wno-format-nonliteral -Wno-unused-parameter -Wno-unused-function
         -Iinclude -D_GNU_SOURCE -DOOM_COMMIT -DDEFAULT_ARENA_SIZE=4000000000)
 

@@ -1,0 +1,12 @@
+// EXPECT: expected a FixedSlice handle
+// Two-argument Push is the fixed class: a movable Slice is rejected even
+// though the layout matches. Pass the arena to grow.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+void use(Arena* arena) {
+  ints s = {};
+  Reserve(arena, s, 4);
+  Push(s, 1);
+}

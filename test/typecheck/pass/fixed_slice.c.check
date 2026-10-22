@@ -1,0 +1,24 @@
+// FixedSlice(T) is a one-descriptor array: fixed capacity, Push(b, v) only.
+#include "arena.h"
+
+typedef Slice(int) ints;
+typedef FixedSlice(int) fints;
+
+_Static_assert(sizeof(fints) == sizeof(SliceInternal), "FixedSlice size");
+_Static_assert(alignof(fints) == alignof(SliceInternal), "FixedSlice align");
+_Static_assert(offsetof(__typeof__(*((fints){0})), data) == offsetof(SliceInternal, data), "data");
+_Static_assert(offsetof(__typeof__(*((fints){0})), len) == offsetof(SliceInternal, len), "len");
+_Static_assert(offsetof(__typeof__(*((fints){0})), cap) == offsetof(SliceInternal, cap), "cap");
+
+int use(Arena* arena) {
+  fints b = {};
+  SliceFixed(arena, b, 8);
+  Push(b, 1);
+  Push(b, 2);
+  PushUnchecked(b, 3);
+
+  ints cloned = {};
+  Clone(arena, cloned, b);
+
+  return b->data[0] + cloned->data[1] + (int)cloned->cap;
+}

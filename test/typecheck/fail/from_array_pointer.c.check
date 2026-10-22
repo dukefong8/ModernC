@@ -1,0 +1,10 @@
+// EXPECT: array argument must be a C array, not a pointer
+// A decayed pointer must not become a one-element slice.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+ints use(Arena* arena, int* p) {
+  ints s = SliceFromArray(arena, p);
+  return s;
+}

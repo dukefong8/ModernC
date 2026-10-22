@@ -1,0 +1,12 @@
+// EXPECT: expected a FixedSlice handle
+// Two-argument Push is the fixed class: a TipSlice is rejected even though
+// the layout matches. Use Push(arena, t, v) for at-tip growth.
+#include "arena.h"
+
+typedef TipSlice(int) tints;
+
+void use(Arena* arena) {
+  tints t = {};
+  SliceTip(arena, t, 4);
+  Push(t, 1);
+}

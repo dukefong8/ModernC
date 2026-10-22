@@ -1,0 +1,11 @@
+// EXPECT: variable length array|not an integer constant expression
+// SliceFromArray has a compile-time-extent rule: a VLA has no static len.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+ints use(Arena* arena, isize n) {
+  int data[n];
+  ints s = SliceFromArray(arena, data);
+  return s;
+}
