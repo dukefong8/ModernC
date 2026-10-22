@@ -50,28 +50,33 @@
 #define ARENA_UNLIKELY(xp) (xp)
 #endif
 
-// Detect Address Sanitizer support. Some cross-toolchains build with ASAN
-// enabled but do not ship the sanitizer interface header (cosmocc is one);
-// in that case fall back to the no-op poison hooks instead of failing.
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
+#define ARENA_NODISCARD [[nodiscard]]
+#elif defined(__GNUC__)
+#define ARENA_NODISCARD __attribute__((warn_unused_result))
+#else
+#define ARENA_NODISCARD
+#endif
+
+// clang-format off
 #if defined(__has_feature)
-#if __has_feature(address_sanitizer)
-#if defined(__has_include)
-#if __has_include(<sanitizer/asan_interface.h>)
-#define ASAN_ENABLED
-#endif
-#else
-#define ASAN_ENABLED
-#endif
-#endif
+#  if __has_feature(address_sanitizer)
+#    define ASAN_DETECTED
+#  endif
 #elif defined(__SANITIZE_ADDRESS__)
-#if defined(__has_include)
-#if __has_include(<sanitizer/asan_interface.h>)
-#define ASAN_ENABLED
+#  define ASAN_DETECTED
 #endif
-#else
-#define ASAN_ENABLED
+
+#if defined(ASAN_DETECTED)
+#  if defined(__has_include)
+#    if __has_include(<sanitizer/asan_interface.h>)
+#      define ASAN_ENABLED
+#    endif
+#  else
+#    define ASAN_ENABLED
+#  endif
 #endif
-#endif
+// clang-format on
 
 #ifdef ASAN_ENABLED
 #include <sanitizer/asan_interface.h>
@@ -221,12 +226,8 @@ static void autofree_impl(void* p) {
 #define _NEWX(a, b, c, d, e, ...) e
 #define _NEW2(a, t)               (t*)arena_alloc(a, sizeof(t), alignof(t), 1, (ArenaFlag){0})
 #define _NEW3(a, t, n)            (t*)arena_alloc(a, sizeof(t), alignof(t), n, (ArenaFlag){0})
-#define _NEW4(a, t, n, z)                                                                                \
-  ({                                                                                                     \
-    __auto_type _z = (z);                                                                                \
-    (t*)_Generic(_z, t*: arena_alloc_init, ArenaFlag: arena_alloc)(a, sizeof(t), alignof(t), n,          \
-                                                                   _Generic(_z, t*: _z, ArenaFlag: _z)); \
-  })
+#define _NEW4(a, t, n, z) \
+  (t*)_Generic((z), t*: arena_alloc_init, ArenaFlag: arena_alloc)(a, sizeof(t), alignof(t), n, (z))
 
 #define CONCAT_(a, b) a##b
 #define CONCAT(a, b)  CONCAT_(a, b)
@@ -278,9 +279,8 @@ typedef struct SliceInternal {
  * errors. Access elements as `s->data[i]`; pass `s` itself, not `&s`.
  * Zero-initialize before first use (`{}`).
  *
- * Three classes, selected by type (see Slice.md for the Goose mapping):
- * movable `Slice` (growth may relocate), tip-resizable `TipSlice` (growth
- * only at `arena->cur`, never moves), and `FixedSlice` (fixed capacity,
+ * Two classes, selected by type (see Slice.md for the Goose mapping):
+ * movable `Slice` (growth may relocate) and `FixedSlice` (fixed capacity,
  * never grows). `Push`/`Reserve` dispatch on the zero-storage `_kind` tag, which
  * overlays `data` and is never read at runtime.
  *
@@ -293,9 +293,10 @@ typedef struct SliceInternal {
  * Forging a descriptor over caller memory is unsupported and undetected.
  */
 /* Type tags used only by _Generic; they overlay data and are never read. */
+// clang-format off
 typedef struct { unsigned char _; } MovableKind;
-typedef struct { unsigned char _; } TipKind;
 typedef struct { unsigned char _; } FixedKind;
+// clang-format on
 
 #define Slice(T)       \
   __typeof__(((union { \
@@ -311,10 +312,11 @@ typedef struct { unsigned char _; } FixedKind;
  * Fixed-capacity handle (Goose T[..]), tagged `FixedKind`. Three-argument
  * `Push`/`Reserve` do not compile on it (no matching `_Generic`
  * association). Ops: `Push(b, v)`, `Pop(b, &out)`, `PushUnchecked`.
- * Copy out with `Clone`. For non-moving growth use `TipSlice`.
+ * Copy out with `Clone`. For growth that never moves while capacity
+ * lasts, `Reserve` up front and stay within `cap`.
  *
  * The two-argument `Push` requires a `FixedSlice`: it appends without
- * growing, aborting at cap instead of relocating. Pass the arena to grow.
+ * growing, returning -1 at cap instead of relocating. Pass the arena to grow.
  */
 #define FixedSlice(T)  \
   __typeof__(((union { \
@@ -324,21 +326,6 @@ typedef struct { unsigned char _; } FixedKind;
       isize cap;       \
     };                 \
     FixedKind _kind;   \
-  }[1]){}))
-
-/**
- * Tip-resizable handle (Goose T[>..]). `TipKind` selects the at-tip path:
- * in-capacity work is in place, growth requires `SliceAtTip` and extends in
- * place, off-tip growth aborts. Element pointers stay valid.
- */
-#define TipSlice(T)    \
-  __typeof__(((union { \
-    struct {           \
-      T* data;         \
-      isize len;       \
-      isize cap;       \
-    };                 \
-    TipKind _kind;     \
   }[1]){}))
 
 /**
@@ -364,13 +351,6 @@ typedef struct { unsigned char _; } FixedKind;
     _SliceAssertStatic(s);                                                   \
     (void)_SliceStaticAssert(_Generic((s)->_kind, FixedKind: 1, default: 0), \
                              "expected a FixedSlice handle");                \
-  } while (0)
-
-/** Tip-resizable descriptor: same footprint as SliceInternal, tagged TipKind. */
-#define _TipSliceAssertStatic(s)                                                                          \
-  do {                                                                                                    \
-    _SliceAssertStatic(s);                                                                                \
-    (void)_SliceStaticAssert(_Generic((s)->_kind, TipKind: 1, default: 0), "expected a TipSlice handle"); \
   } while (0)
 
 /**
@@ -437,29 +417,17 @@ typedef struct { unsigned char _; } FixedKind;
  * Copy a C array into arena storage: `cap == len`, own backing block, source
  * may die immediately. Result is an ordinary movable slice.
  *
- * Two-argument form is a declaration initializer (`ints s =
- * SliceFromArray(arena, data);`); three-argument form writes into an
- * existing destination. Wrap comma-containing arrays in extra parens:
+ * Writes into an existing movable `Slice` destination (a `FixedSlice` is a
+ * compile error). Wrap comma-containing arrays in extra parens:
  * `((int[]){1, 2, 3})`.
  */
-#define SliceFromArray(...) _SliceFromArrayX(__VA_ARGS__, _SliceFromArray3, _SliceFromArray2)(__VA_ARGS__)
-#define _SliceFromArrayX(a, b, c, d, ...) d
-
-/* Declaration form: a braced initializer with a fresh arena copy. */
-#define _SliceFromArray2(arena, a)                                                             \
-  {                                                                                            \
-    {                                                                                          \
-      .data = New((arena), __typeof__(*(a)), _SliceArrayLen(a), ((a) + _SliceAssertArray(a))), \
-      .len = _SliceArrayLen(a), .cap = _SliceArrayLen(a),                                      \
-    }                                                                                          \
-  }
-
-#define _SliceFromArray3(arena, s, a)                                                                      \
+#define SliceFromArray(arena, s, a)                                                                        \
   ({                                                                                                       \
     __auto_type _fa_dst = (s);                                                                             \
     (void)_SliceStaticAssert(__builtin_types_compatible_p(__typeof__(*(_fa_dst->data)), __typeof__(*(a))), \
                              "slice element type does not match the array");                               \
     _SliceAssertStatic(_fa_dst);                                                                           \
+    (void)_Generic(_fa_dst->_kind, MovableKind: 0); /* FixedSlice cannot be initialized this way */        \
     __auto_type _fa_arena = (arena);                                                                       \
     (void)_SliceAssertArray(a);                                                                            \
     isize _fa_len = _SliceArrayLen(a);                                                                     \
@@ -498,85 +466,69 @@ typedef struct { unsigned char _; } FixedKind;
 #endif
 
 /**
- * True when growing this slice extends in place: its block ends exactly at
- * `arena->cur`. Empty (`data == NULL`) slices qualify; they have no
- * references to preserve. This predicate, not capacity, defines the at-tip
- * class.
- */
-#define SliceAtTip(arena, slice) \
-  ((slice)->data == NULL || arena_at_tip((arena), (slice)->data, sizeof(*(slice)->data), (slice)->cap))
-
-/** Runtime gate for at-tip growth: only a `SliceAtTip` slice may extend. Never relocates. */
-#define _SliceAssertAtTip(arena, s) \
-  Assert(SliceAtTip((arena), (s)) && "at-tip resize requires the slice to end at the arena tip")
-
-/**
- * Grow a tip-resizable slice in place. Typed, so the descriptor is updated
- * directly; `arena_slice_grow` handles the type-erased capacity growth.
- * Off-tip growth aborts, and the no-move assertion keeps element pointers
- * valid. Both arguments are used more than once, so callers must pass simple
- * lvalues; `_Push3` passes its already-bound `_s` and the original `arena`.
- */
-#define _SliceGrowAtTip(arena, s)                                                                     \
-  do {                                                                                                \
-    const void* _at_tip_before = (s)->data;                                                           \
-    _SliceAssertAtTip((arena), (s));                                                                  \
-    arena_slice_grow((arena), (s), sizeof(*(s)->data), alignof(__typeof__(*(s)->data)));              \
-    Assert((_at_tip_before == NULL || (s)->data == _at_tip_before) && "at-tip Push moved the slice"); \
-  } while (0)
-
-/**
  * Append a value. Forms:
  *
  *   Push(arena, s, v)   movable Slice: may grow/relocate
  *   Push(b, v)           FixedSlice: fixed cap, never grows
- *   Push(arena, t, v)    TipSlice: grows only at the arena tip
  *
- * `_Generic` on `_kind` names `TipKind` (at-tip) and `MovableKind`
- * (movable) with no `default`, so an unknown tag — including `FixedKind`
- * — is a constraint error rather than a silent movable path. A `FixedSlice`
- * therefore cannot grow through the three-argument form.
+ * The three-argument form names only `MovableKind` in its `_Generic` check
+ * (no `default`), so a `FixedSlice` is a constraint error rather than a
+ * silent growth path.
  *
- * Each form returns a pointer to the new element (`data + len - 1`). The
- * pushing call's own pointer stays valid, but a later movable `Push`/`Reserve`
- * invalidates earlier results. `Pop` never relocates.
+ * Each form returns the index of the new element (`len - 1`); reach it with
+ * `At(s, idx)` or `s->data[idx]`. An index stays valid across later moves,
+ * while a raw element pointer does not. The fixed form is nodiscard (a full
+ * push reports -1); the growable forms always succeed. `Pop` never relocates.
  */
 #define Push(...)               _PushX(__VA_ARGS__, _Push3, _Push2)(__VA_ARGS__)
 #define _PushX(a, b, c, d, ...) d
 
-/* Fixed form: `FixedSlice` handle; no arena, no growth. `len < cap` always checked. */
-#define _Push2(slice, val)                                        \
-  ({                                                              \
-    __auto_type _b = (slice);                                     \
-    __auto_type _v = (val);                                       \
-    _SliceAssertValueType(_b->data, _v);                          \
-    _FixedSliceAssertStatic(_b);                                  \
-    Assert(_b->len < _b->cap && "Push: fixed capacity exceeded"); \
-    __auto_type _p = _b->data + _b->len++;                        \
-    *_p = _v;                                                     \
-    _p;                                                           \
-  })
+// Identity wrappers so the fallible forms carry the unused-result check
+// through the macro expansion. Only the forms that can fail without
+// aborting are wrapped (fixed Push reports -1 when full, Pop reports false
+// when empty); the infallible forms always succeed and stay quiet when
+// discarded.
+ARENA_NODISCARD ARENA_INLINE isize _PushIdx(isize idx) {
+  return idx;
+}
 
-/* Three-argument dispatch: only `TipKind` and `MovableKind` are named, so a
- * `FixedSlice` (`FixedKind`) or any unknown tag is a constraint error
- * rather than a silent movable path. The no-growth path is fully typed; growth
- * uses `_SliceGrowAtTip` (typed) or `arena_slice_grow` (type-erased). */
-#define _Push3(arena, slice, val)                                                         \
-  ({                                                                                      \
-    __auto_type _s = (slice);                                                             \
-    __auto_type _v = (val);                                                               \
-    _SliceAssertValueType(_s->data, _v);                                                  \
-    _SliceAssertStatic(_s);                                                               \
-    _SliceAssertRuntimeDebug(_s);                                                         \
-    if (ARENA_UNLIKELY(_s->len >= _s->cap)) {                                             \
-      if (_Generic(_s->_kind, TipKind: 1, MovableKind: 0))                                \
-        _SliceGrowAtTip((arena), _s);                                                     \
-      else                                                                                \
-        arena_slice_grow((arena), _s, sizeof(*_s->data), alignof(__typeof__(*_s->data))); \
-    }                                                                                     \
-    __auto_type _p = _s->data + _s->len++;                                                \
-    *_p = _v;                                                                             \
-    _p;                                                                                   \
+ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
+  return ok;
+}
+
+/* Fixed form: `FixedSlice` handle; no arena, no growth. Returns the new
+ * element's index, or -1 when full (no append, no abort). Nodiscard: a
+ * full push is silent unless the caller checks the result. */
+#define _Push2(slice, val)               \
+  _PushIdx(({                            \
+    __auto_type _b = (slice);            \
+    __auto_type _v = (val);              \
+    _SliceAssertValueType(_b->data, _v); \
+    _FixedSliceAssertStatic(_b);         \
+    isize _b_idx = -1;                   \
+    if (_b->len < _b->cap) {             \
+      _b_idx = _b->len++;                \
+      _b->data[_b_idx] = _v;             \
+    }                                    \
+    _b_idx;                              \
+  }))
+
+/* Three-argument form: only `MovableKind` is named, so a `FixedSlice`
+ * (`FixedKind`) or any unknown tag is a constraint error rather than a
+ * silent growth path. Growth is type-erased (`arena_slice_grow`). */
+#define _Push3(arena, slice, val)                                                       \
+  ({                                                                                    \
+    __auto_type _s = (slice);                                                           \
+    __auto_type _v = (val);                                                             \
+    _SliceAssertValueType(_s->data, _v);                                                \
+    _SliceAssertStatic(_s);                                                             \
+    _SliceAssertRuntimeDebug(_s);                                                       \
+    (void)_Generic(_s->_kind, MovableKind: 0); /* FixedSlice cannot grow this way */    \
+    if (ARENA_UNLIKELY(_s->len >= _s->cap))                                             \
+      arena_slice_grow((arena), _s, sizeof(*_s->data), alignof(__typeof__(*_s->data))); \
+    isize _idx = _s->len++;                                                             \
+    _s->data[_idx] = _v;                                                                \
+    _idx;                                                                               \
   })
 
 /**
@@ -586,29 +538,30 @@ typedef struct { unsigned char _; } FixedKind;
  *   for (isize i = 0; i < n; i++) PushUnchecked(s, (int64_t)i);
  *
  * Debug traps when out of room; release is unchecked (caller owns the bound).
- * Same value contract as `Push`, evaluated once; returns the new element.
+ * Same value contract as `Push`, evaluated once; returns the new element's index.
  */
-#define PushUnchecked(slice, val)          \
-  ({                                       \
-    __auto_type _s = (slice);              \
-    __auto_type _v = (val);                \
-    _SliceAssertValueType(_s->data, _v);   \
-    _SliceAssertStatic(_s);                \
-    _SliceAssertRuntimeDebug(_s);          \
-    _SliceAssertSpareDebug(_s);            \
-    __auto_type _p = _s->data + _s->len++; \
-    *_p = _v;                              \
-    _p;                                    \
+#define PushUnchecked(slice, val)        \
+  ({                                     \
+    __auto_type _s = (slice);            \
+    __auto_type _v = (val);              \
+    _SliceAssertValueType(_s->data, _v); \
+    _SliceAssertStatic(_s);              \
+    _SliceAssertRuntimeDebug(_s);        \
+    _SliceAssertSpareDebug(_s);          \
+    isize _idx = _s->len++;              \
+    _s->data[_idx] = _v;                 \
+    _idx;                                \
   })
 
 /**
  * Remove the last element into `*out`; returns false (leaving `*out`
  * untouched) when empty. Never aborts, moves, or allocates. The slot is
  * not cleared and may be reused by the next `Push`. Structural: no arena
- * or `_kind` needed.
+ * or `_kind` needed. Nodiscard: an empty pop is silent unless the caller
+ * checks the result.
  */
 #define Pop(slice, out)                   \
-  ({                                      \
+  _PopOk(({                                \
     __auto_type _s = (slice);             \
     __auto_type _o = (out);               \
     _SliceAssertValueType(_s->data, *_o); \
@@ -618,82 +571,60 @@ typedef struct { unsigned char _; } FixedKind;
     if (_popped)                          \
       *_o = _s->data[--_s->len];          \
     _popped;                              \
-  })
+  }))
+
+/**
+ * Bounds-checked element access: `At(s, i)` is an lvalue for `s->data[i]`
+ * through the current handle, so it stays valid across moves (unlike a held
+ * element pointer). Both arguments are evaluated once. The bounds check is
+ * always on, even in release; `s->data[i]` remains the unchecked form.
+ */
+#define At(s, i)                                                           \
+  (*({                                                                     \
+    __auto_type _at_s = (s);                                               \
+    isize _at_i = (isize)(i);                                              \
+    _SliceAssertStatic(_at_s);                                             \
+    _SliceAssertRuntimeDebug(_at_s);                                       \
+    Assert(_at_i >= 0 && _at_i < _at_s->len && "At: index out of bounds"); \
+    &_at_s->data[_at_i];                                                   \
+  }))
 
 /**
  * Grow capacity to at least `min_cap` (checks always on, even in release).
  * At/below `cap` is a no-op. Movable `Slice` may relocate (old pointers go
- * stale); `TipSlice` never moves, growing in place only at the tip and
- * aborting off-tip. No three-argument form exists for `FixedSlice`
- * (capacity is fixed once by `SliceFixed`).
+ * stale); at the arena tip it extends in place. There is no `Reserve` form
+ * for `FixedSlice` (capacity is fixed once by `SliceFixed`).
  */
-#define Reserve(arena, slice, min_cap)                                                               \
-  do {                                                                                               \
-    __auto_type _s = (slice);                                                                        \
-    isize _rsv_cap = (min_cap);                                                                      \
-    _SliceAssertStatic(_s);                                                                          \
-    _SliceAssertRuntimeDebug(_s);                                                                    \
-    Assert(_rsv_cap >= 0 && "reserve size must be non-negative");                                    \
-    if (_Generic(_s->_kind, TipKind: 1, MovableKind: 0))                                             \
-      _SliceReserveAtTip((arena), _s, _rsv_cap);                                                     \
-    else                                                                                             \
-      arena_slice_reserve((arena), _s, sizeof(*_s->data), alignof(__typeof__(*_s->data)), _rsv_cap); \
-  } while (0)
-
-/**
- * Reserve without relocating (internal at-tip policy behind `TipSlice`).
- * `s` and `min_cap` are already bound and validated by the caller. Within
- * `cap` it is a no-op; beyond `cap` it requires `SliceAtTip` and extends in
- * place. Off-tip growth aborts.
- */
-#define _SliceReserveAtTip(arena, s, min_cap)                                                              \
-  do {                                                                                                     \
-    if ((min_cap) > (s)->cap) {                                                                            \
-      const void* _at_tip_before = (s)->data;                                                              \
-      _SliceAssertAtTip((arena), (s));                                                                     \
-      arena_slice_reserve((arena), (s), sizeof(*(s)->data), alignof(__typeof__(*(s)->data)), (min_cap));   \
-      Assert((_at_tip_before == NULL || (s)->data == _at_tip_before) && "at-tip Reserve moved the slice"); \
-    }                                                                                                      \
+#define Reserve(arena, slice, min_cap)                                                             \
+  do {                                                                                             \
+    __auto_type _s = (slice);                                                                      \
+    isize _rsv_cap = (min_cap);                                                                    \
+    _SliceAssertStatic(_s);                                                                        \
+    _SliceAssertRuntimeDebug(_s);                                                                  \
+    Assert(_rsv_cap >= 0 && "reserve size must be non-negative");                                  \
+    (void)_Generic(_s->_kind, MovableKind: 0); /* FixedSlice cannot reserve this way */            \
+    arena_slice_reserve((arena), _s, sizeof(*_s->data), alignof(__typeof__(*_s->data)), _rsv_cap); \
   } while (0)
 
 /**
  * Initialize a `FixedSlice` (Goose T[..]): `len == 0`, no growth.
  * `Push(arena, b, ...)` and `Reserve(arena, b, ...)` are compile errors.
- * Use `Clone` to copy out, or `TipSlice` for tip growth.
+ * Use `Clone` to copy out.
  */
-#define SliceFixed(arena, slice, capacity)                                                            \
-  do {                                                                                                \
-    __auto_type _bs = (slice);                                                                        \
-    isize _bs_cap = (capacity);                                                                       \
-    _FixedSliceAssertStatic(_bs);                                                                     \
-    _Static_assert(sizeof(_bs->data[0]) > 0, "fixed-size elements only");                             \
-    _Static_assert(IsPow2(_Alignof(__typeof__(_bs->data[0]))), "element alignment");                  \
-    _Static_assert(sizeof(_bs->data[0]) % _Alignof(__typeof__(_bs->data[0])) == 0, "element stride"); \
-    Assert(_bs_cap >= 0 && "fixed capacity must be non-negative");                                    \
-    _bs->data = NULL;                                                                                 \
-    _bs->len = 0;                                                                                     \
-    _bs->cap = 0;                                                                                     \
-    _SliceReserveAtTip((arena), _bs, _bs_cap);                                                        \
-  } while (0)
-
-/**
- * Initialize a `TipSlice` (Goose T[>..]): `len == 0`, resizable but
- * non-moving. Growth requires `SliceAtTip` and extends in place; off-tip
- * growth aborts. Use `Clone` to copy out as a movable slice.
- */
-#define SliceTip(arena, slice, capacity)                                                              \
-  do {                                                                                                \
-    __auto_type _ts = (slice);                                                                        \
-    isize _ts_cap = (capacity);                                                                       \
-    _TipSliceAssertStatic(_ts);                                                                       \
-    _Static_assert(sizeof(_ts->data[0]) > 0, "fixed-size elements only");                             \
-    _Static_assert(IsPow2(_Alignof(__typeof__(_ts->data[0]))), "element alignment");                  \
-    _Static_assert(sizeof(_ts->data[0]) % _Alignof(__typeof__(_ts->data[0])) == 0, "element stride"); \
-    Assert(_ts_cap >= 0 && "tip capacity must be non-negative");                                      \
-    _ts->data = NULL;                                                                                 \
-    _ts->len = 0;                                                                                     \
-    _ts->cap = 0;                                                                                     \
-    _SliceReserveAtTip((arena), _ts, _ts_cap);                                                        \
+#define SliceFixed(arena, slice, capacity)                                                             \
+  do {                                                                                                 \
+    __auto_type _bs = (slice);                                                                         \
+    isize _bs_cap = (capacity);                                                                        \
+    _FixedSliceAssertStatic(_bs);                                                                      \
+    _Static_assert(sizeof(_bs->data[0]) > 0, "fixed-size elements only");                              \
+    _Static_assert(IsPow2(_Alignof(__typeof__(_bs->data[0]))), "element alignment");                   \
+    _Static_assert(sizeof(_bs->data[0]) % _Alignof(__typeof__(_bs->data[0])) == 0, "element stride");  \
+    Assert(_bs_cap >= 0 && "fixed capacity must be non-negative");                                     \
+    _bs->data = NULL;                                                                                  \
+    _bs->len = 0;                                                                                      \
+    _bs->cap = 0;                                                                                      \
+    if (_bs_cap > 0)                                                                                   \
+      arena_slice_reserve((arena), _bs, sizeof(*_bs->data), alignof(__typeof__(*_bs->data)), _bs_cap); \
   } while (0)
 
 /**

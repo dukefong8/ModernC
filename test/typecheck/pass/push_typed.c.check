@@ -1,4 +1,4 @@
-// Push accepts exactly-matching element types and yields the new address.
+// Push accepts exactly-matching element types and yields the new index.
 #include "arena.h"
 
 struct A { int v; };
@@ -9,11 +9,11 @@ typedef Slice(const char*) strs;
 
 void use(Arena* arena, as xs, ints is, strs ss) {
   struct A a = {7};
-  struct A* p = Push(arena, xs, a);
-  p->v = a.v;
+  isize p = Push(arena, xs, a);
+  At(xs, p).v = a.v;
 
-  int* q = Push(arena, is, 42);
-  *q += 1;
+  isize q = Push(arena, is, 42);
+  At(is, q) += 1;
 
   const char* lit = "hi";
   Push(arena, ss, lit);

@@ -62,11 +62,14 @@ family (`S(s)` for printf, `astr_split`/`astr_split_by_char` iterators, trim/sli
 `Push(arena, s, v)` is the way to append: it stores the value it is given, so call sites spell the
 element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
 (`-Wpointer-type-mismatch`), not a conversion. An element whose contents are produced rather than
-known up front is pushed as a placeholder and filled through the returned pointer; `New`
+known up front is pushed as a placeholder and filled through `At(s, idx)` using the returned
+index; `New`
 allocates a standalone object, it does not append. `Reserve(arena, s, n)` grows capacity up front
 so a batch of pushes never steps it, and `PushUnchecked(s, v)` — Push without the bounds check,
 and without the arena argument because it never allocates — fills that reserved room; debug builds
-trap when the room runs out. Elements are read and written through `s->data[i]` directly.
+trap when the room runs out. `Push`/`PushUnchecked` return the new element's index (fixed
+`Push` returns -1 when full instead of aborting). Elements are read and written through
+`At(s, i)` or `s->data[i]` directly; never hold element pointers across a growing call.
 
 `Slice(T)` is a one-element array of a descriptor union (`T *data`, `len`, `cap`) built
 with `__typeof__`: `Slice(struct Point)` and `Slice(const char*)` work as written, and repeat
@@ -74,9 +77,8 @@ expansions don't collide on a tag. The array wrapper enforces pass-by-reference:
 parameter of slice type decays to a pointer to the caller's descriptor, `ints t = s` and `t = s`
 are compile errors, and elements are read through `s->data[i]`. `SliceMoveAssign` moves one
 descriptor into another; explicit raw copies and struct copies alias silently. `SliceFromArray(arena, array)` copies a C array into arena storage; there is no
-zero-copy caller-backed view. Classes are separate types: `FixedSlice` is fixed-capacity only,
-`TipSlice` is the tip-resizable non-moving class (`Push`/`Reserve(arena, t, ...)` grow only when
-`SliceAtTip` holds and preserve element pointers), and ordinary `Slice` is movable. Arrays cannot
+zero-copy caller-backed view. Two classes, both separate types: `FixedSlice` is fixed-capacity only,
+and ordinary `Slice` is movable (growth may relocate; at the tip it extends in place). Arrays cannot
 be returned by value, so `Clone` writes into a destination: `Clone(arena, out, src[, start[, len]])`.
 
 Copy policy: never copy a struct or union that contains a slice descriptor by value. C blocks
@@ -94,8 +96,7 @@ value. Only capacity growth is type-erased (`arena_slice_reserve`, `arena_slice_
 `arena_at_tip`); slot computation, typed stores, and descriptor updates stay inline in the
 macros. Statement macros use `do { } while (0)`; value-returning macros use a statement
 expression only where required. Each operation macro binds its slice/value/capacity arguments
-once (checks are unevaluated); `arena` is passed through and used twice on the tip-growth
-path, and `SliceAtTip` evaluates its slice argument multiple times.
+once (checks are unevaluated).
 
 **Allocation order is semantically load-bearing.** Several "optimizations" are really contracts
 with the caller: `arena_free` only reclaims when the pointer is at the bump tip; `Push` grows in

@@ -1,5 +1,5 @@
 // EXPECT: not compatible with any .*association
-// Reserve takes a Slice or TipSlice, not the fixed FixedSlice handle:
+// Reserve takes a movable Slice, not the fixed FixedSlice handle:
 // FixedKind matches no _Generic association.
 #include "arena.h"
 

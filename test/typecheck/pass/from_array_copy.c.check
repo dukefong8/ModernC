@@ -26,7 +26,8 @@ int use(Arena* arena) {
   points ps = {};
   SliceFromArray(arena, ps, pts);
 
-  ints lit = SliceFromArray(arena, ((int[]){9, 10}));
+  ints lit = {};
+  SliceFromArray(arena, lit, ((int[]){9, 10}));
 
   return s->data[0] + cs->data[0] + ps->data[1].x + lit->data[1];
 }

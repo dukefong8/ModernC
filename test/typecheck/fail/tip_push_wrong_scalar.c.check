@@ -1,9 +1,0 @@
-// EXPECT: value type does not match slice element type
-// The at-tip TipSlice Push keeps the strict element-type guard.
-#include "arena.h"
-
-typedef TipSlice(int) tints;
-
-void use(Arena* arena, tints t) {
-  Push(arena, t, 3.5);
-}

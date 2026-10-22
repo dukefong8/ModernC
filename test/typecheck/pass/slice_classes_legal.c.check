@@ -1,14 +1,14 @@
-// Three slice classes and their legal conversions.
+// Two slice classes and their legal conversions.
 #include "arena.h"
 
 typedef Slice(int) ints;
 typedef FixedSlice(int) fints;
-typedef TipSlice(int) tints;
 
 int use(Arena* arena) {
   /* movable: array copy + Clone destination */
   int stack_data[] = {1, 2, 3};
-  ints fixed = SliceFromArray(arena, stack_data);
+  ints fixed = {};
+  SliceFromArray(arena, fixed, stack_data);
   ints movable = {};
   Clone(arena, movable, fixed);
   Reserve(arena, fixed, 8);
@@ -17,21 +17,10 @@ int use(Arena* arena) {
   /* fixed */
   fints b = {};
   SliceFixed(arena, b, 4);
-  Push(b, 1);
-  Push(b, 2);
+  (void)Push(b, 1);
+  (void)Push(b, 2);
   ints out = {};
   Clone(arena, out, b);
 
-  /* tip-resizable non-moving */
-  tints t = {};
-  SliceTip(arena, t, 2);
-  Push(arena, t, 3);
-  Reserve(arena, t, 8);
-
-  ints t_copy = {};
-  Clone(arena, t_copy, t);
-  Push(arena, t_copy, 4);
-
-  return fixed->data[0] + movable->data[0] + b->data[0] + out->data[0] +
-         t->data[0] + t_copy->data[0];
+  return fixed->data[0] + movable->data[0] + b->data[0] + out->data[0];
 }

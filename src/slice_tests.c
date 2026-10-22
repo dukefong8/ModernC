@@ -16,7 +16,6 @@ typedef Slice(unsigned int) uints;
 typedef Slice(struct Point) points;
 typedef Slice(const char*) strs;
 typedef FixedSlice(int) fints;
-typedef TipSlice(int) tints;
 
 /* Once-only evaluation probes: each helper bumps a shared counter and returns
  * its argument, so a macro that evaluates an argument more than once shows up
@@ -34,10 +33,6 @@ static fints* slice_eval_fints(fints* b) {
   slice_eval_calls++;
   return b;
 }
-static tints* slice_eval_tints(tints* t) {
-  slice_eval_calls++;
-  return t;
-}
 static int slice_eval_int(int v) {
   slice_eval_calls++;
   return v;
@@ -53,15 +48,14 @@ static int* slice_eval_out(int* p) {
 
 /* --- Slice: initialization from a C fixed-size array --- */
 
-
-
 UTEST(slice, from_array_copy_owns_storage) {
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
   int data[] = {10, 20, 30};
-  ints s = SliceFromArray(arena, data);
+  ints s = {};
+  SliceFromArray(arena, s, data);
 
   ASSERT_TRUE(s->data != data);
   ASSERT_EQ(s->len, 3);
@@ -114,9 +108,6 @@ UTEST(slice, from_array_copy_to_destination) {
   ASSERT_EQ(top, 9);
 }
 
-
-
-
 /* --- Slice: fixed (T[..]) via the two-argument Push --- */
 
 UTEST(slice, fixed_init_and_push) {
@@ -133,14 +124,14 @@ UTEST(slice, fixed_init_and_push) {
   int* base = s->data;
   byte* cur = arena->cur;
   for (int i = 0; i < 8; i++) {
-    int* slot = Push(s, i * 3);
-    ASSERT_TRUE(slot == &s->data[i]);
-    ASSERT_EQ(*slot, i * 3);
+    isize idx = Push(s, i * 3);
+    ASSERT_EQ(idx, i);
+    ASSERT_EQ(s->data[idx], i * 3);
   }
 
   ASSERT_EQ(s->len, 8);
   ASSERT_TRUE(s->data == base);  // fixed pushes never move
-  ASSERT_EQ(arena->cur, cur);           // and never allocate
+  ASSERT_EQ(arena->cur, cur);    // and never allocate
   ASSERT_EQ(s->data[7], 21);
 
   ints c = {};
@@ -157,53 +148,50 @@ UTEST(slice, fixed_init_and_push) {
 
 /* --- Slice classes and their legal conversions --- */
 
-
-UTEST(slice, tip_push_and_reserve_keep_references) {
-  // The tip-resizable class is defined by SliceAtTip, not by a capacity
-  // bound: growth extends in place and existing pointers survive.
+UTEST(slice, movable_reserve_at_tip_extends_in_place) {
+  // Growth at the arena tip extends in place without relocating; the
+  // cheapest way to observe it is Reserve past cap while at the tip.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  TipSlice(int) t = {0};
-  SliceTip(arena, t, 0);  // empty handle at the tip
-  Push(arena, t, 10);
+  ints t = {};
+  Reserve(arena, t, 8);
+  ASSERT_EQ(t->len, 0);
   int* base = t->data;
-  int* first = &t->data[0];
 
-  while (t->len < t->cap)
-    Push(arena, t, 0);
-  ASSERT_TRUE(SliceAtTip(arena, t));
+  for (int i = 0; i < 8; i++)
+    Push(arena, t, i * 10);
+  ASSERT_TRUE(t->data == base);  // in-capacity pushes never move
+  ASSERT_EQ(t->data[0], 0);
 
   Reserve(arena, t, t->cap + 8);
-  ASSERT_TRUE(t->data == base);   // no relocation
-  ASSERT_TRUE(&t->data[0] == first);
-  ASSERT_EQ(t->data[0], 10);
+  ASSERT_TRUE(t->data == base);  // at-tip growth: no relocation
+  ASSERT_EQ(t->data[0], 0);
 
-  int* slot = Push(arena, t, 99);
-  ASSERT_TRUE(slot == t->data + t->len - 1);
-  ASSERT_EQ(*slot, 99);
-  ASSERT_EQ(t->data[0], 10);
+  isize idx = Push(arena, t, 99);
+  ASSERT_EQ(idx, t->len - 1);
+  ASSERT_EQ(t->data[idx], 99);
+  ASSERT_EQ(t->data[0], 0);
 }
 
-UTEST(slice, tip_resize_within_cap_is_off_tip_safe) {
+UTEST(slice, movable_within_cap_is_off_tip_safe) {
   // Writes and reserves inside the existing cap never move, so they are
-  // in place even when another allocation has pushed the tip handle off-tip.
+  // in place even when another allocation has pushed the slice off-tip.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  TipSlice(int) t = {0};
-  SliceTip(arena, t, 4);
+  ints t = {};
+  Reserve(arena, t, 4);
   int* base = t->data;
   Push(arena, t, 1);
 
   New(arena, char);  // off-tip, but the handle still has spare capacity
-  ASSERT_FALSE(SliceAtTip(arena, t));
 
-  int* slot = Push(arena, t, 2);  // no growth: still in place
+  isize idx = Push(arena, t, 2);  // no growth: still in place
   ASSERT_TRUE(t->data == base);
-  ASSERT_TRUE(slot == &t->data[1]);
+  ASSERT_EQ(idx, 1);
 
   Reserve(arena, t, 4);  // at cap: no-op
   ASSERT_TRUE(t->data == base);
@@ -211,57 +199,8 @@ UTEST(slice, tip_resize_within_cap_is_off_tip_safe) {
   ASSERT_EQ(t->data[1], 2);
 }
 
-#if defined(__unix__) || defined(__APPLE__)
-UTEST(slice, tip_push_off_tip_aborts) {
-  // Growing the tip-resizable class off-tip must abort rather than relocate.
-  pid_t pid = fork();
-  ASSERT_TRUE(pid >= 0);
-
-  if (pid == 0) {
-    enum { size = KB(4) };
-    byte mem[size] = {0};
-    Arena arena[] = {arena_init(mem, size)};
-
-    TipSlice(int) t = {0};
-    SliceTip(arena, t, 0);
-    Push(arena, t, 1);
-    while (t->len < t->cap)
-      Push(arena, t, 0);  // full, still at the tip
-
-    New(arena, char);          // t is no longer at the tip
-    Push(arena, t, 2);    // full and off-tip: Assert must trap
-    _exit(0);
-  }
-
-  int status = 0;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFSIGNALED(status));
-}
-
-UTEST(slice, tip_reserve_off_tip_aborts) {
-  pid_t pid = fork();
-  ASSERT_TRUE(pid >= 0);
-
-  if (pid == 0) {
-    enum { size = KB(4) };
-    byte mem[size] = {0};
-    Arena arena[] = {arena_init(mem, size)};
-
-    TipSlice(int) t = {0};
-    SliceTip(arena, t, 2);
-    New(arena, char);            // off-tip
-    Reserve(arena, t, 4);   // growth beyond cap: Assert must trap
-    _exit(0);
-  }
-
-  int status = 0;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFSIGNALED(status));
-}
-#endif
-
 UTEST(slice, class_fixed_to_movable) {
-  // Class 1 -> 3: FixedSlice is fixed-capacity; Clone copies it out
+  // Fixed -> movable: FixedSlice is fixed-capacity; Clone copies it out
   // into an ordinary movable Slice.
   enum { size = KB(4) };
   byte mem[size] = {0};
@@ -269,8 +208,8 @@ UTEST(slice, class_fixed_to_movable) {
 
   FixedSlice(int) b = {0};
   SliceFixed(arena, b, 4);
-  Push(b, 1);
-  Push(b, 2);
+  ASSERT_EQ(Push(b, 1), 0);
+  ASSERT_EQ(Push(b, 2), 1);
 
   ints copy = {};
   Clone(arena, copy, b);
@@ -284,7 +223,7 @@ UTEST(slice, class_fixed_to_movable) {
 }
 
 UTEST(slice, class_movable_to_fixed_rebuild) {
-  // Class 3 -> 1 has no descriptor conversion. The legal path is to build a
+  // Movable -> fixed has no descriptor conversion. The legal path is to build a
   // FixedSlice and copy the elements; direct assignment is a compile error.
   enum { size = KB(4) };
   byte mem[size] = {0};
@@ -298,7 +237,7 @@ UTEST(slice, class_movable_to_fixed_rebuild) {
   FixedSlice(int) b = {0};
   SliceFixed(arena, b, g->len);
   for (isize i = 0; i < g->len; i++)
-    Push(b, g->data[i]);
+    ASSERT_EQ(Push(b, g->data[i]), i);
 
   ASSERT_EQ(b->len, g->len);
   ASSERT_EQ(b->cap, g->len);
@@ -331,7 +270,7 @@ UTEST(slice, empty_slice_grows_from_zero) {
 }
 
 UTEST(slice, empty_arena_fixed) {
-  // Class 1 empty: FixedSlice with capacity 0 is a valid fixed store.
+  // Fixed empty: FixedSlice with capacity 0 is a valid fixed store.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -349,14 +288,13 @@ UTEST(slice, empty_arena_fixed) {
   ASSERT_EQ(empty->cap, 0);
 }
 
-UTEST(slice, empty_tip_slice_grows_at_tip) {
-  // Class 2 empty: TipSlice capacity 0 grows by allocating at cur.
+UTEST(slice, empty_movable_grows_at_tip) {
+  // Empty movable slice grows by allocating at cur.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  TipSlice(int) t = {0};
-  SliceTip(arena, t, 0);
+  ints t = {};
   ASSERT_TRUE(t->data == NULL);
   ASSERT_EQ(t->len, 0);
   ASSERT_EQ(t->cap, 0);
@@ -368,9 +306,8 @@ UTEST(slice, empty_tip_slice_grows_at_tip) {
   ASSERT_TRUE((void*)t->data == (void*)cur);
   ASSERT_EQ(t->data[0], 5);
 
-  // Empty TipSlice at the new tip: Reserve may allocate in place.
-  TipSlice(int) r = {0};
-  SliceTip(arena, r, 0);
+  // Another empty slice at the new tip: Reserve may allocate in place.
+  ints r = {};
   byte* r_cur = arena->cur;
   Reserve(arena, r, 4);
   ASSERT_TRUE(r->cap >= 4);
@@ -392,9 +329,8 @@ UTEST(slice, empty_off_tip_can_grow) {
   ASSERT_EQ((uintptr_t)movable->data % (uintptr_t)alignof(int), (uintptr_t)0);
   ASSERT_EQ(movable->data[0], 1);
 
-  TipSlice(int) t = {0};
-  SliceTip(arena, t, 0);
-  New(arena, char);  // off-tip before the empty tip slice grows
+  ints t = {};
+  New(arena, char);  // off-tip before the second empty slice grows
   byte* cur2 = arena->cur;
   Push(arena, t, 2);
   ASSERT_TRUE((byte*)t->data >= cur2);
@@ -423,8 +359,7 @@ UTEST(slice, overlapping_slices_nested_scratch) {
     // Overlapping structural descriptors over the same arena elements.
     ints alias = {{.data = inner->data, .len = inner->len, .cap = inner->cap}};
     ints head = {{.data = inner->data, .len = 2, .cap = 2}};
-    ints tail = {{.data = inner->data + 1, .len = inner->len - 1,
-                  .cap = inner->cap - 1}};
+    ints tail = {{.data = inner->data + 1, .len = inner->len - 1, .cap = inner->cap - 1}};
 
     alias->data[0] = 99;
     ASSERT_EQ(inner->data[0], 99);
@@ -470,7 +405,7 @@ UTEST(slice, overlapping_slices_nested_scratch) {
 }
 
 UTEST(slice, class_movable_moves) {
-  // Class 3: an ordinary Slice may relocate when growth happens off-tip.
+  // Movable: an ordinary Slice may relocate when growth happens off-tip.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -490,14 +425,14 @@ UTEST(slice, class_movable_moves) {
   ASSERT_EQ(s->data[s->len - 1], 99);
 }
 
-UTEST(slice, tip_push_at_tip) {
-  // TipSlice Push extends capacity only while the block ends at the tip.
+UTEST(slice, movable_push_at_tip_grows_in_place) {
+  // Movable Push extends capacity in place while the block ends at the tip.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  TipSlice(int) t = {0};
-  SliceTip(arena, t, 2);
+  ints t = {};
+  Reserve(arena, t, 2);
   int* base = t->data;
   byte* cur = arena->cur;
 
@@ -506,22 +441,22 @@ UTEST(slice, tip_push_at_tip) {
   ASSERT_TRUE(t->data == base);
   ASSERT_EQ(arena->cur, cur);  // spare capacity: no arena activity
 
-  int* slot = Push(arena, t, 30);  // full, at tip: grow in place
+  isize idx = Push(arena, t, 30);  // full, at tip: grow in place
   ASSERT_TRUE(t->data == base);
   ASSERT_TRUE(t->cap > 2);
   ASSERT_TRUE(arena->cur > cur);
   ASSERT_EQ(t->len, 3);
-  ASSERT_TRUE(slot == &t->data[2]);
-  ASSERT_EQ(*slot, 30);
+  ASSERT_EQ(idx, 2);
+  ASSERT_EQ(t->data[idx], 30);
 }
 
-UTEST(slice, tip_reserve_at_tip) {
+UTEST(slice, movable_reserve_at_tip_extends) {
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  TipSlice(int) t = {0};
-  SliceTip(arena, t, 2);
+  ints t = {};
+  Reserve(arena, t, 2);
   int* base = t->data;
 
   Reserve(arena, t, 4);  // at tip: extends, no move
@@ -529,14 +464,13 @@ UTEST(slice, tip_reserve_at_tip) {
   ASSERT_TRUE(t->cap >= 4);
 }
 
-#if defined(__unix__) || defined(__APPLE__)
-UTEST(slice, tip_reserve_off_tip_within_cap) {
+UTEST(slice, movable_reserve_off_tip_within_cap) {
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  TipSlice(int) t = {0};
-  SliceTip(arena, t, 4);
+  ints t = {};
+  Reserve(arena, t, 4);
   Push(arena, t, 1);
 
   New(arena, char);  // t is off-tip
@@ -554,13 +488,16 @@ UTEST(slice, tip_reserve_off_tip_within_cap) {
   ASSERT_EQ(t->data[1], 2);
 }
 
-UTEST(slice, tip_pointer_kept_after_tip_growth) {
+UTEST(slice, movable_address_stable_after_at_tip_growth) {
+  // At-tip growth extends in place, so addresses read before the growth
+  // stay valid — but only at the tip. Off-tip growth relocates instead,
+  // which is why clients must use indices (see fill_survives_grow).
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  TipSlice(int) t = {0};
-  SliceTip(arena, t, 2);
+  ints t = {};
+  Reserve(arena, t, 2);
   Push(arena, t, 10);
   int* first = &t->data[0];
 
@@ -580,8 +517,9 @@ UTEST(slice, fixed_push_unchecked) {
   FixedSlice(int) b = {0};
   SliceFixed(arena, b, 4);
 
-  int* p = PushUnchecked(b, 7);
-  ASSERT_EQ(*p, 7);
+  isize idx = PushUnchecked(b, 7);
+  ASSERT_EQ(idx, 0);
+  ASSERT_EQ(b->data[idx], 7);
   ASSERT_EQ(b->len, 1);
   ASSERT_EQ(b->data[0], 7);
 }
@@ -596,8 +534,8 @@ UTEST(slice, fixed_struct_clone) {
 
   fpoints b = {};
   SliceFixed(arena, b, 2);
-  Push(b, ((struct Point){1, 2}));
-  Push(b, ((struct Point){3, 4}));
+  ASSERT_EQ(Push(b, ((struct Point){1, 2})), 0);
+  ASSERT_EQ(Push(b, ((struct Point){3, 4})), 1);
 
   points copy = {};
   Clone(arena, copy, b);
@@ -653,8 +591,8 @@ UTEST(slice, pop_fixed) {
   FixedSlice(int) b = {0};
   SliceFixed(arena, b, 4);
   int* base = b->data;
-  Push(b, 1);
-  Push(b, 2);
+  ASSERT_EQ(Push(b, 1), 0);
+  ASSERT_EQ(Push(b, 2), 1);
 
   New(arena, char);  // off-tip: Pop must still shrink in place
   int top = 0;
@@ -663,7 +601,7 @@ UTEST(slice, pop_fixed) {
   ASSERT_EQ(b->len, 1);
   ASSERT_TRUE(b->data == base);
 
-  Push(b, 3);  // fixed push after pop reuses the slot
+  ASSERT_EQ(Push(b, 3), 1);  // fixed push after pop reuses the slot
   ASSERT_EQ(b->len, 2);
   ASSERT_EQ(b->data[1], 3);
   ASSERT_TRUE(b->data == base);
@@ -685,7 +623,6 @@ UTEST(slice, pop_struct_value) {
   ASSERT_FALSE(Pop(s, &top));
 }
 
-
 UTEST(slice, push_then_pop_returns_same_value) {
   enum { size = KB(4) };
   byte mem[size] = {0};
@@ -694,9 +631,9 @@ UTEST(slice, push_then_pop_returns_same_value) {
   ints s = {};
   Push(arena, s, 7);  // a value that must survive the round trips
   for (int v = -3; v <= 3; v++) {
-    int* slot = Push(arena, s, v);
-    ASSERT_TRUE(slot == &s->data[s->len - 1]);
-    ASSERT_EQ(*slot, v);
+    isize idx = Push(arena, s, v);
+    ASSERT_EQ(idx, s->len - 1);
+    ASSERT_EQ(s->data[idx], v);
     int popped = 0;
     ASSERT_TRUE(Pop(s, &popped));
     ASSERT_EQ(popped, v);
@@ -741,7 +678,7 @@ UTEST(slice, pop_then_push_is_noop) {
   FixedSlice(int) b = {0};
   SliceFixed(arena, b, 4);
   for (int i = 0; i < 3; i++)
-    Push(b, i + 1);
+    ASSERT_EQ(Push(b, i + 1), i);
   int* bdata = b->data;
   isize blen = b->len;
   isize bcap = b->cap;
@@ -750,7 +687,7 @@ UTEST(slice, pop_then_push_is_noop) {
   int bpopped = 0;
   ASSERT_TRUE(Pop(b, &bpopped));
   ASSERT_EQ(bpopped, blast);
-  Push(b, bpopped);
+  ASSERT_EQ(Push(b, bpopped), blen - 1);
 
   ASSERT_EQ(b->len, blen);
   ASSERT_EQ(b->cap, bcap);
@@ -770,8 +707,8 @@ UTEST(slice, movable_pop_then_push_is_noop) {
   int* before = s->data;
   isize cap_before = s->cap;
 
-  New(arena, char);      // move the slice off the arena tip
-  Push(arena, s, 16);   // full and off-tip: class 4 relocates
+  New(arena, char);    // move the slice off the arena tip
+  Push(arena, s, 16);  // full and off-tip: class 4 relocates
   ASSERT_TRUE(s->data != before);
   ASSERT_TRUE(s->cap > cap_before);
 
@@ -817,12 +754,12 @@ UTEST(slice, push_grow_move_then_pop) {
 
   New(arena, char);  // the full slice is no longer at the arena tip
   int sentinel = 123456;
-  int* pushed = Push(arena, s, sentinel);  // growth: memmove old elements
+  isize idx = Push(arena, s, sentinel);  // growth: memmove old elements
 
   ASSERT_TRUE(s->data != old_data);
   ASSERT_TRUE(s->cap > old_cap);
-  ASSERT_TRUE(pushed == s->data + s->len - 1);
-  ASSERT_EQ(*pushed, sentinel);
+  ASSERT_EQ(idx, s->len - 1);
+  ASSERT_EQ(s->data[idx], sentinel);
   for (int i = 0; i < 16; i++)
     ASSERT_EQ(s->data[i], i);  // pre-existing elements survived the move
 
@@ -838,87 +775,29 @@ UTEST(slice, push_grow_move_then_pop) {
     ASSERT_EQ(s->data[i], i);
 }
 
-#if defined(__unix__) || defined(__APPLE__)
-UTEST(slice, tip_reserve_off_tip_growth_aborts) {
-  // Reserving beyond cap on an off-tip TipSlice must not relocate.
-  pid_t pid = fork();
-  ASSERT_TRUE(pid >= 0);
+UTEST(slice, class_fixed_push_full_returns_minus_one) {
+  // Fixed is fixed-capacity: pushing past cap reports -1 without
+  // appending and without aborting.
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
 
-  if (pid == 0) {
-    enum { size = KB(4) };
-    byte mem[size] = {0};
-    Arena arena[] = {arena_init(mem, size)};
+  FixedSlice(int) b = {0};
+  SliceFixed(arena, b, 2);
+  ASSERT_EQ(Push(b, 10), 0);
+  ASSERT_EQ(Push(b, 20), 1);
+  ASSERT_EQ(b->len, 2);
+  ASSERT_EQ(Push(b, 30), -1);
+  ASSERT_EQ(b->len, 2);
+  ASSERT_EQ(b->data[0], 10);
+  ASSERT_EQ(b->data[1], 20);
 
-    TipSlice(int) t = {0};
-    SliceTip(arena, t, 2);
-    New(arena, char);  // off-tip
-    Reserve(arena, t, 4);  // growth required: Assert must trap
-    _exit(0);
-  }
-
-  int status = 0;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFSIGNALED(status));
+  // Capacity 0 is a valid empty fixed slice: every Push reports -1.
+  FixedSlice(int) e = {0};
+  SliceFixed(arena, e, 0);
+  ASSERT_EQ(Push(e, 1), -1);
+  ASSERT_EQ(e->len, 0);
 }
-#endif
-#endif
-
-UTEST(slice, class_nonmovable_off_tip_aborts) {
-  // Class 2 is resizable but non-movable: growth off the arena tip must
-  // abort, never relocate.
-  pid_t pid = fork();
-  ASSERT_TRUE(pid >= 0);
-
-  if (pid == 0) {
-    enum { size = KB(4) };
-    byte mem[size] = {0};
-    Arena arena[] = {arena_init(mem, size)};
-
-    TipSlice(int) t = {0};
-    SliceTip(arena, t, 2);
-    New(arena, char);  // t is no longer at the tip
-
-    Push(arena, t, 1);
-    Push(arena, t, 2);
-    Push(arena, t, 3);  // full and off-tip: Assert must trap
-    _exit(0);
-  }
-
-  int status = 0;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFSIGNALED(status));
-}
-
-#if defined(__unix__) || defined(__APPLE__)
-UTEST(slice, class_fixed_empty_push_aborts) {
-  // Class 1 with capacity 0 is a valid empty slice, but the fixed-capacity
-  // two-argument Push has no room and must abort rather than grow.
-  pid_t pid = fork();
-  ASSERT_TRUE(pid >= 0);
-
-  if (pid == 0) {
-    enum { size = KB(4) };
-    byte mem[size] = {0};
-    Arena arena[] = {arena_init(mem, size)};
-
-    FixedSlice(int) b = {0};
-    SliceFixed(arena, b, 0);
-    Push(b, 1);  // capacity 0: Assert must trap
-    _exit(0);
-  }
-
-  int status = 0;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFSIGNALED(status));
-}
-
-#endif
-
-#if defined(__unix__) || defined(__APPLE__)
-
-
-
-#endif
 
 UTEST(slice, move_transfer_keeps_identity) {
   enum { size = KB(4) };
@@ -980,7 +859,7 @@ UTEST(slice, pop_empty_is_safe) {
   int btop = 123;
   ASSERT_FALSE(Pop(b, &btop));
   ASSERT_EQ(btop, 123);
-  Push(b, 9);
+  ASSERT_EQ(Push(b, 9), 0);
   ASSERT_TRUE(Pop(b, &btop));
   ASSERT_EQ(btop, 9);
   btop = 123;
@@ -1039,10 +918,10 @@ UTEST(slice, push_grow_many) {
   for (int i = 0; i < 200; i++)
     ASSERT_EQ(s->data[i], i);
 
-  // Push returns the new element's address
-  int* p = Push(arena, s, 999);
-  ASSERT_EQ(*p, 999);
-  ASSERT_TRUE(p == &s->data[200]);
+  // Push returns the new element's index
+  isize idx = Push(arena, s, 999);
+  ASSERT_EQ(idx, 200);
+  ASSERT_EQ(s->data[idx], 999);
   ASSERT_EQ(s->len, 201);
 }
 
@@ -1059,13 +938,13 @@ UTEST(slice, push_unchecked_fills_reserved) {
   byte* cur = arena->cur;
 
   for (int i = 0; i < 200; i++) {
-    int* p = PushUnchecked(s, i * 2);
-    ASSERT_TRUE(p == &s->data[i]);
-    ASSERT_EQ(*p, i * 2);
+    isize idx = PushUnchecked(s, i * 2);
+    ASSERT_EQ(idx, i);
+    ASSERT_EQ(s->data[idx], i * 2);
   }
 
   ASSERT_EQ(s->len, 200);
-  ASSERT_EQ(s->cap, cap);       // no growth stepped it
+  ASSERT_EQ(s->cap, cap);      // no growth stepped it
   ASSERT_EQ(arena->cur, cur);  // and nothing allocated at all
   ASSERT_EQ(s->data[199], 398);
 }
@@ -1111,13 +990,12 @@ UTEST(slice, push_unchecked_top_up_partially_filled) {
     PushUnchecked(s, i);
 
   ASSERT_EQ(s->len, 103);
-  ASSERT_EQ(s->cap, cap);       // no growth stepped it
+  ASSERT_EQ(s->cap, cap);      // no growth stepped it
   ASSERT_EQ(arena->cur, cur);  // and nothing allocated at all
   ASSERT_EQ(s->data[0], 0);
   ASSERT_EQ(s->data[2], 20);
   ASSERT_EQ(s->data[102], 99);
 }
-
 
 UTEST(slice, reserve_grows_up_front) {
   enum { size = KB(16) };
@@ -1195,7 +1073,6 @@ UTEST(slice, reserve_at_tip_extends) {
   ASSERT_EQ(s->data[2], 2);
 }
 
-
 UTEST(slice, clone_empty) {
   enum { size = KB(1) };
   byte mem[size] = {0};
@@ -1207,7 +1084,6 @@ UTEST(slice, clone_empty) {
   ASSERT_EQ(copy->len, 0);
   ASSERT_TRUE(copy->data == NULL);
 }
-
 
 UTEST(slice, clone_evaluates_args_once) {
   enum { size = KB(4) };
@@ -1248,9 +1124,10 @@ UTEST(slice, macro_args_evaluated_once) {
 
   ints s = {};
   slice_eval_calls = 0;
-  int* slot = Push(slice_eval_arena(arena), *slice_eval_slice(&s), slice_eval_int(7));
+  isize idx = Push(slice_eval_arena(arena), *slice_eval_slice(&s), slice_eval_int(7));
   ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, value
-  ASSERT_EQ(*slot, 7);
+  ASSERT_EQ(idx, 0);
+  ASSERT_EQ(s->data[idx], 7);
   ASSERT_EQ(s->len, 1);
 
   slice_eval_calls = 0;
@@ -1275,11 +1152,6 @@ UTEST(slice, macro_args_evaluated_once) {
   fints b = {};
   slice_eval_calls = 0;
   SliceFixed(slice_eval_arena(arena), *slice_eval_fints(&b), slice_eval_cap(4));
-  ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, capacity
-
-  tints t = {};
-  slice_eval_calls = 0;
-  SliceTip(slice_eval_arena(arena), *slice_eval_tints(&t), slice_eval_cap(4));
   ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, capacity
 
   int data[] = {1, 2};
@@ -1388,10 +1260,11 @@ UTEST(slice, build_element_in_place) {
   chunks cs = {};
 
   // Placeholder, then stream into it: three successive fills, as a decoder
-  // would, each starting where the last stopped.
-  Chunk* c = Push(arena, cs, (Chunk){0});
+  // would, each starting where the last stopped. Everything is reached by
+  // index, so a later growth cannot strand a held pointer.
+  isize ci = Push(arena, cs, (Chunk){0});
   for (int i = 0; i < 3; i++)
-    c->n += stream_fill(c->data + c->n, (int)sizeof c->data - c->n);
+    At(cs, ci).n += stream_fill(At(cs, ci).data + At(cs, ci).n, (int)sizeof At(cs, ci).data - At(cs, ci).n);
 
   ASSERT_EQ(cs->len, 1);
   ASSERT_EQ(cs->data[0].n, 48);
@@ -1408,9 +1281,10 @@ UTEST(slice, fill_survives_grow) {
 
   chunks cs = {};
 
-  Chunk* c = Push(arena, cs, (Chunk){0});
-  c->n = 42;
-  memcpy(c->data, "filled before growth", 21);
+  isize ci = Push(arena, cs, (Chunk){0});
+  At(cs, ci).n = 42;
+  memcpy(At(cs, ci).data, "filled before growth", 21);
+  Chunk* stale = &cs->data[ci];  // raw pointers still go stale on a move
 
   // Push the slice off the arena tip, so the growth below cannot extend in
   // place and has to memmove the elements to fresh storage.
@@ -1419,13 +1293,13 @@ UTEST(slice, fill_survives_grow) {
     Push(arena, cs, (Chunk){0});
 
   ASSERT_EQ(cs->len, 101);
-  ASSERT_EQ(cs->data[0].n, 42);  // the fill rode along with the move
-  ASSERT_TRUE(strcmp(cs->data[0].data, "filled before growth") == 0);
-  ASSERT_TRUE(c != &cs->data[0]);  // ...while c still names the pre-move copy
+  ASSERT_EQ(At(cs, ci).n, 42);  // the fill rode along with the move
+  ASSERT_TRUE(strcmp(At(cs, ci).data, "filled before growth") == 0);
+  ASSERT_TRUE(stale != &cs->data[0]);  // ...while raw pointers name the pre-move copy
 
   // From here on the live element is reached by index.
-  cs->data[0].data[0] = 'F';
-  ASSERT_EQ(cs->data[0].data[0], 'F');
+  At(cs, 0).data[0] = 'F';
+  ASSERT_EQ(At(cs, 0).data[0], 'F');
 }
 
 UTEST(slice, data_is_typed) {

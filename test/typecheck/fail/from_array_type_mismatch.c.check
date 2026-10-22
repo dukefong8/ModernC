@@ -4,8 +4,8 @@
 
 typedef Slice(double) doubles;
 
-doubles use(Arena* arena) {
+void use(Arena* arena) {
   int data[3] = {0};
-  doubles s = SliceFromArray(arena, data);
-  return s;
+  doubles s = {};
+  SliceFromArray(arena, s, data);
 }

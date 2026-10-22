@@ -13,8 +13,8 @@ _Static_assert(offsetof(__typeof__(*((fints){0})), cap) == offsetof(SliceInterna
 int use(Arena* arena) {
   fints b = {};
   SliceFixed(arena, b, 8);
-  Push(b, 1);
-  Push(b, 2);
+  (void)Push(b, 1);
+  (void)Push(b, 2);
   PushUnchecked(b, 3);
 
   ints cloned = {};

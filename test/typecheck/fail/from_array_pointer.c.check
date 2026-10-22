@@ -4,7 +4,7 @@
 
 typedef Slice(int) ints;
 
-ints use(Arena* arena, int* p) {
-  ints s = SliceFromArray(arena, p);
-  return s;
+void use(Arena* arena, int* p) {
+  ints s = {};
+  SliceFromArray(arena, s, p);
 }

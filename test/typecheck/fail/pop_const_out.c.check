@@ -6,5 +6,5 @@ typedef Slice(int) ints;
 
 void use(ints s) {
   const int out = 0;
-  Pop(s, &out);
+  (void)Pop(s, &out);
 }

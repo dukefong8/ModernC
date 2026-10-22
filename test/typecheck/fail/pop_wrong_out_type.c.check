@@ -6,5 +6,5 @@ typedef Slice(int) ints;
 
 void use(ints s) {
   double d = 0;
-  Pop(s, &d);
+  (void)Pop(s, &d);
 }

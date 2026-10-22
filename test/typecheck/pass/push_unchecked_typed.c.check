@@ -9,14 +9,14 @@ typedef Slice(const char*) strs;
 
 void use(Arena* arena, as xs, ints is, strs ss) {
   Reserve(arena, is, 4);
-  int* q = PushUnchecked(is, 42);
-  *q += 1;
+  isize q = PushUnchecked(is, 42);
+  At(is, q) += 1;
   PushUnchecked(is, 43);
 
   Reserve(arena, xs, 2);
   struct A a = {7};
-  struct A* p = PushUnchecked(xs, a);
-  p->v = a.v;
+  isize p = PushUnchecked(xs, a);
+  At(xs, p).v = a.v;
 
   Reserve(arena, ss, 1);
   const char* lit = "hi";

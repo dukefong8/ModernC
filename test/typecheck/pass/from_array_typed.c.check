@@ -49,7 +49,8 @@ int use(Arena* arena) {
   ints os = {};
   SliceFromArray(arena, os, one);
 
-  ints lit = SliceFromArray(arena, ((int[]){4, 5, 6}));
+  ints lit = {};
+  SliceFromArray(arena, lit, ((int[]){4, 5, 6}));
 
   Push(arena, s, 40);
 

@@ -1,0 +1,12 @@
+// EXPECT: not compatible with any .*association
+// SliceFromArray destination must be a movable Slice, not a FixedSlice handle:
+// FixedKind matches no _Generic association.
+#include "arena.h"
+
+typedef FixedSlice(int) fints;
+
+void use(Arena* arena) {
+  int data[] = {1, 2, 3};
+  fints b = {};
+  SliceFromArray(arena, b, data);
+}
