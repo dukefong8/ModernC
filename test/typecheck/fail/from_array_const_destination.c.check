@@ -6,6 +6,6 @@ typedef Slice(int) ints;
 
 void use(Arena* arena) {
   const int data[3] = {0};
-  ints s = {0};
+  ints* s = New(arena, ints);
   SliceFromArray(arena, s, data);
 }

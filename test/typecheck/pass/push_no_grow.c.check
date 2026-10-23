@@ -1,0 +1,26 @@
+// Two-argument Push is the checked, non-growing path for both Slice classes.
+#include "arena.h"
+
+typedef Slice(int) ints;
+typedef FixedSlice(int) fints;
+
+int use(Arena* arena) {
+  ints* s = New(arena, ints);
+  Reserve(arena, s, 4);
+
+  isize a = Push(s, 1);
+  isize b = Push(s, 2);
+  (void)a;
+  (void)b;
+
+  fints f = {0};
+  SliceFixed(arena, &f, 2);
+  isize c = Push(&f, 3);
+  isize d = Push(&f, 4);
+  isize full = Push(&f, 5);  // compiles; returns -1 at runtime
+  (void)c;
+  (void)d;
+  (void)full;
+
+  return (int)(s->len + f.len);
+}

@@ -5,6 +5,6 @@
 
 typedef Slice(int) ints;
 
-void use(ints s) {
+void use(ints *s) {
   PushUnchecked(s, 3.5);
 }

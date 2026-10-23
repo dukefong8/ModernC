@@ -5,6 +5,6 @@
 
 typedef Slice(int) ints;
 
-void use(Arena* arena, ints s) {
+void use(Arena* arena, ints *s) {
   Push(arena, s, 3.5);
 }

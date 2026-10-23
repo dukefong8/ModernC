@@ -6,6 +6,6 @@ typedef Slice(double) doubles;
 
 void use(Arena* arena) {
   int data[3] = {0};
-  doubles s = {};
+  doubles* s = New(arena, doubles);
   SliceFromArray(arena, s, data);
 }

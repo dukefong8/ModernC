@@ -56,45 +56,48 @@ OOM policy is per-call and three-way: default is `longjmp` to the `jmp_buf` regi
 
 The API surface built on top: `New(arena, T[, n][, NO_INIT | OOM_NULL | src_ptr])` (`_Generic`
 selects copy-init when the 4th arg is a pointer), `Scratch(arena)` for scope-restored temporaries,
-`Slice(T)` + `Push`/`PushUnchecked`/`Reserve`/`Clone`, and the `astr` length-prefixed string
+`Slice(T)` + `Push`/`PushUnchecked`/`Reserve`/`Clone`/`SliceAtTip`, and the `astr` length-prefixed string
 family (`S(s)` for printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
 
-`Push(arena, s, v)` is the way to append: it stores the value it is given, so call sites spell the
-element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
-(`-Wpointer-type-mismatch`), not a conversion. An element whose contents are produced rather than
-known up front is pushed as a placeholder and filled through `At(s, idx)` using the returned
-index; `New`
-allocates a standalone object, it does not append. `Reserve(arena, s, n)` grows capacity up front
-so a batch of pushes never steps it, and `PushUnchecked(s, v)` — Push without the bounds check,
-and without the arena argument because it never allocates — fills that reserved room; debug builds
-trap when the room runs out. `Push`/`PushUnchecked` return the new element's index (fixed
-`Push` returns -1 when full instead of aborting). Elements are read and written through
-`At(s, i)` or `s->data[i]` directly; never hold element pointers across a growing call.
+`Push(arena, s, v)` is the only growing form: it stores the value it is given, so call sites
+spell the element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
+(`-Wpointer-type-mismatch`), not a conversion. It requires a movable `Slice` and may relocate.
+The 2-argument `Push(s, v)` is the structural checked no-growth form: it never allocates or
+relocates and returns -1 when full (nodiscard). An element whose contents are produced rather than
+known up front is pushed as a placeholder and filled through `At(s, idx)`; `New` allocates a
+standalone object, it does not append. `Reserve(arena, s, n)` grows capacity up front so a batch
+of 2-arg pushes never steps it, and `PushUnchecked(s, v)` is the unchecked no-growth fast path
+(debug-only bounds trap). `Push`/`PushUnchecked` return the new element's index. Elements are read
+and written through `At(s, i)` or `s->data[i]` directly; never hold element pointers across a
+growing call.
 
-`Slice(T)` is a one-element array of a descriptor union (`T *data`, `len`, `cap`) built
-with `__typeof__`: `Slice(struct Point)` and `Slice(const char*)` work as written, and repeat
-expansions don't collide on a tag. The array wrapper enforces pass-by-reference: a function
-parameter of slice type decays to a pointer to the caller's descriptor, `ints t = s` and `t = s`
-are compile errors, and elements are read through `s->data[i]`. `SliceMoveAssign` moves one
-descriptor into another; explicit raw copies and struct copies alias silently. `SliceFromArray(arena, array)` copies a C array into arena storage; there is no
-zero-copy caller-backed view. Two classes, both separate types: `FixedSlice` is fixed-capacity only,
-and ordinary `Slice` is movable (growth may relocate; at the tip it extends in place). Arrays cannot
-be returned by value, so `Clone` writes into a destination: `Clone(arena, out, src[, start[, len]])`.
+`Slice(T)` is a plain descriptor union (`T *data`, `len`, `cap`) that expands directly to an
+anonymous union — no `__typeof__`, no array wrapper. `Slice(struct Point)` and
+`Slice(const char*)` work as written, and repeat expansions stay distinct types, so name the
+type with a typedef. Allocate a movable descriptor in the arena with `New(arena, ints)` (zeroed
+into a valid empty slice) and pass the pointer to every operation; the descriptor and its
+backing block share the arena lifetime. Its address stays fixed while `data` may relocate.
+Elements are read through `s->data[i]`. Plain descriptor assignment, `memcpy`, and struct copies
+compile and alias silently. `SliceFromArray(arena, out, array)` copies a C array into arena
+storage; there is no zero-copy caller-backed view. Two classes, both separate types:
+`FixedSlice` is fixed-capacity only, and ordinary `Slice` is movable (growth may relocate; at
+the tip it extends in place). `Clone` writes through a destination pointer:
+`Clone(arena, out, src[, start[, len]])`.
 
-Copy policy: never copy a struct or union that contains a slice descriptor by value. C blocks
-`t = s` and `ints t = s` for the slice itself, but struct assignment, struct initialization,
-by-value pass/return of a slice-holding struct, `memcpy`, and explicit `copy[0] = s[0]` still
-compile and leave two descriptors sharing one backing block. Pass slice-holding structs by
-pointer, use `Clone` for element copies, and `SliceMoveAssign` for descriptor moves. There is no
-runtime guard for these aliases; ASan generally will not catch them because relocation does not
-free the old arena block.
+Storage/passing rubric: movable `Slice` is stored and passed by pointer (`ints* s = New(arena,
+ints)`; `ints*` struct field), because growth can relocate `data` and a value copy would pin the
+old block. `FixedSlice` is stored and passed by value (`fints b = {0};`; `fints` struct field),
+because its backing never relocates; fixed operations take `&b`. A fixed value copy is a valid
+view with shared data but independent `len`/`cap`. Use `Clone` for independent element copies.
+There is no runtime guard for descriptor aliases; ASan generally will not catch them because
+relocation does not free the old arena block.
 
 The layout must stay identical to `SliceInternal`, which `arena_slice_reserve` memcpys —
-`arena_tests.c` static-asserts the offsets, and `make typecheck` holds the compile-time fixtures.
+`slice_tests.c` static-asserts the offsets, and `make typecheck` holds the compile-time fixtures.
 Slice macros exist where C needs a type name, `_kind` dispatch, an initializer, or a return
 value. Only capacity growth is type-erased (`arena_slice_reserve`, `arena_slice_grow`,
-`arena_at_tip`); slot computation, typed stores, and descriptor updates stay inline in the
-macros. Statement macros use `do { } while (0)`; value-returning macros use a statement
+`_arena_at_tip`, exposed as `SliceAtTip(arena, s)`); slot computation, typed stores, and descriptor
+updates stay inline in the macros. Statement macros use `do { } while (0)`; value-returning macros use a statement
 expression only where required. Each operation macro binds its slice/value/capacity arguments
 once (checks are unevaluated).
 

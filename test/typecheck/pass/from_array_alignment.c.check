@@ -12,7 +12,7 @@ _Static_assert(alignof(wides) == alignof(SliceInternal), "descriptor alignment")
 
 int use(Arena* arena) {
   struct Wide wide[] = {{{1, 2}}, {{3, 4}}};
-  wides local = {};
+  wides* local = New(arena, wides);
   SliceFromArray(arena, local, wide);
   return (int)local->len + (int)local->data[0].v[0];
 }

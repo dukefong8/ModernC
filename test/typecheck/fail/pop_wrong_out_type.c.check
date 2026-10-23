@@ -4,7 +4,7 @@
 
 typedef Slice(int) ints;
 
-void use(ints s) {
+void use(ints *s) {
   double d = 0;
   (void)Pop(s, &d);
 }

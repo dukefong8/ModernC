@@ -6,9 +6,9 @@ typedef FixedSlice(const int) cfints;
 
 int use(Arena* arena) {
   cfints b = {0};
-  SliceFixed(arena, b, 2);
+  SliceFixed(arena, &b, 2);
 
-  cints copy = {};
-  Clone(arena, copy, b);
+  cints* copy = New(arena, cints);
+  Clone(arena, copy, &b);
   return copy->data[0];
 }

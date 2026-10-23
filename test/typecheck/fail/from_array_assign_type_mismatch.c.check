@@ -8,7 +8,7 @@ typedef Slice(double) doubles;
 
 int use(Arena* arena) {
   int data[3] = {0};
-  doubles s = {0};
+  doubles* s = New(arena, doubles);
   SliceFromArray(arena, s, data);
   return (int)s->len;
 }

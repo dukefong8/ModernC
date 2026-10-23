@@ -12,6 +12,6 @@ struct B {
 
 typedef Slice(struct A) as;
 
-void use(Arena* arena, as xs, struct B b) {
+void use(Arena* arena, as *xs, struct B b) {
   Push(arena, xs, b);
 }

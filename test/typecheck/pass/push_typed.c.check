@@ -7,7 +7,7 @@ typedef Slice(struct A) as;
 typedef Slice(int) ints;
 typedef Slice(const char*) strs;
 
-void use(Arena* arena, as xs, ints is, strs ss) {
+void use(Arena* arena, as *xs, ints *is, strs *ss) {
   struct A a = {7};
   isize p = Push(arena, xs, a);
   At(xs, p).v = a.v;

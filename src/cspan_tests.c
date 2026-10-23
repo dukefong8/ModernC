@@ -58,7 +58,7 @@ UTEST(cspan, slice2) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  cspan_ints values = {};
+  cspan_ints* values = New(arena, cspan_ints);
   for (int i = 0; i < 10 * 20 * 30; i++) {
     Push(arena, values, i);
   }
@@ -116,8 +116,8 @@ UTEST(cspan, equality) {
 struct cspan_cube {
   Arena arena;
   byte* mem;
-  cspan_ints values;
-  cspan_tiles tiles;
+  cspan_ints* values;
+  cspan_tiles* tiles;
 };
 
 UTEST_F_SETUP(cspan_cube) {
@@ -132,6 +132,7 @@ UTEST_F_SETUP(cspan_cube) {
   ASSERT_TRUE(utest_fixture->mem != NULL);
   utest_fixture->arena = arena_init(utest_fixture->mem, MB(4));
 
+  utest_fixture->values = New(&utest_fixture->arena, cspan_ints);
   Reserve(&utest_fixture->arena, utest_fixture->values, N);
   for (int i = 0; i < N; i++) {
     PushUnchecked(utest_fixture->values, i + 1);
@@ -139,6 +140,7 @@ UTEST_F_SETUP(cspan_cube) {
 
   Span3 ms3 = cspan_md(utest_fixture->values->data, CUBE, CUBE, CUBE);
 
+  utest_fixture->tiles = New(&utest_fixture->arena, cspan_tiles);
   Reserve(&utest_fixture->arena, utest_fixture->tiles, TILES);
   for (int i = 0; i < CUBE; i += TSIZE) {
     for (int j = 0; j < CUBE; j += TSIZE) {

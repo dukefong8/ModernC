@@ -5,6 +5,6 @@
 typedef Slice(int) ints;
 
 void use(Arena* arena, int* p) {
-  ints s = {};
+  ints* s = New(arena, ints);
   SliceFromArray(arena, s, p);
 }

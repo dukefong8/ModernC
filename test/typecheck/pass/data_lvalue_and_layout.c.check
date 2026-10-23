@@ -1,5 +1,5 @@
-// s->data[i] is an assignable element accessor; Slice(T) is a one-descriptor
-// array whose descriptor matches SliceInternal.
+// s->data[i] is an assignable element accessor; Slice(T) is a plain
+// descriptor whose layout matches SliceInternal.
 #include "arena.h"
 
 struct Big {
@@ -11,11 +11,11 @@ typedef Slice(struct Big) bigs;
 
 _Static_assert(sizeof(ints) == sizeof(SliceInternal), "no overhead");
 _Static_assert(alignof(ints) == alignof(SliceInternal), "align must match");
-_Static_assert(offsetof(__typeof__(*((ints){0})), data) == offsetof(SliceInternal, data), "data offset");
-_Static_assert(offsetof(__typeof__(*((ints){0})), len) == offsetof(SliceInternal, len), "len offset");
-_Static_assert(offsetof(__typeof__(*((ints){0})), cap) == offsetof(SliceInternal, cap), "cap offset");
+_Static_assert(offsetof(ints, data) == offsetof(SliceInternal, data), "data offset");
+_Static_assert(offsetof(ints, len) == offsetof(SliceInternal, len), "len offset");
+_Static_assert(offsetof(ints, cap) == offsetof(SliceInternal, cap), "cap offset");
 
-void use(Arena* arena, ints s) {
+void use(Arena* arena, ints *s) {
   s->data[0] = 5;
   s->data[0] += 1;
   int* addr = &s->data[0];

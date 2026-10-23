@@ -13,43 +13,43 @@ typedef Slice(struct Wide) wides;
 
 int use(Arena* arena) {
   int data[] = {10, 20, 30};
-  ints s = {};
+  ints* s = New(arena, ints);
   SliceFromArray(arena, s, data);
 
   char bytes[8] = {0};
-  chars b = {};
+  chars* b = New(arena, chars);
   SliceFromArray(arena, b, bytes);
 
   const int cd[] = {1, 2};
-  cints cs = {};
+  cints* cs = New(arena, cints);
   SliceFromArray(arena, cs, cd);
 
   int mutable_data[] = {7};
-  cints cm = {};
+  cints* cm = New(arena, cints);
   SliceFromArray(arena, cm, mutable_data);
 
   struct Point pts[] = {{1, 2}, {3, 4}};
-  points ps = {};
+  points* ps = New(arena, points);
   SliceFromArray(arena, ps, pts);
 
   const char* words[] = {"a", "bc"};
-  strs ws = {};
+  strs* ws = New(arena, strs);
   SliceFromArray(arena, ws, words);
 
   struct Wide wide[] = {{{1, 2}}};
-  wides w = {};
+  wides* w = New(arena, wides);
   SliceFromArray(arena, w, wide);
 
   enum { N = 5 };
   int fixed[N] = {0};
-  ints fs = {};
+  ints* fs = New(arena, ints);
   SliceFromArray(arena, fs, fixed);
 
   int one[] = {42};
-  ints os = {};
+  ints* os = New(arena, ints);
   SliceFromArray(arena, os, one);
 
-  ints lit = {};
+  ints* lit = New(arena, ints);
   SliceFromArray(arena, lit, ((int[]){4, 5, 6}));
 
   Push(arena, s, 40);

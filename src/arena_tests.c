@@ -165,6 +165,113 @@ UTEST(arena, scratch_nested) {
   ASSERT_EQ(arena->end - arena->beg, size0);
 }
 
+typedef Slice(int) ints;
+
+/* Outer and scratch cursors share one region: an outer write through an alias
+ * consumes the earliest scratch slots, so the alias is used last in the block
+ * while the outer result stays intact. */
+UTEST(arena, scratch_outer_alias_clone) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  Arena* out = arena;  // alias to the outer arena, bound before the shadow
+  ints* kept = New(out, ints);
+  {
+    Scratch(arena);  // `arena` is a temporary copy here
+    ints* tmp = New(arena, ints);
+    Push(arena, tmp, (int)42);
+
+    ints* extra = New(arena, ints);  // more scratch work before the outer write
+    Push(arena, extra, (int)7);
+    ASSERT_EQ(extra->data[0], 7);
+
+    Clone(out, kept, tmp);  // last use of `out` in the block
+  }
+
+  ASSERT_EQ(kept->len, 1);
+  ASSERT_EQ(kept->cap, 1);
+  ASSERT_EQ(kept->data[0], 42);
+  ASSERT_GT(arena->cur, arena->beg);
+}
+
+/* The clone destination starts at the scratch base, inside the source data.
+ * arena_alloc_init copies with memmove, so the overlap is safe. */
+UTEST(arena, scratch_overlapping_clone) {
+  enum { size = KB(8) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  Arena* out = arena;
+  ints* big = New(out, ints);
+  {
+    Scratch(arena);
+    ints* tmp = New(arena, ints);
+    for (int i = 0; i < 64; i++)
+      Push(arena, tmp, (int)i);
+
+    int* src = tmp->data;
+    Clone(out, big, tmp);
+    // Destination lies before the source and overlaps it.
+    ASSERT_TRUE((byte*)big->data < (byte*)src);
+    ASSERT_TRUE((byte*)big->data + 64 * sizeof(int) > (byte*)src);
+  }
+
+  ASSERT_EQ(big->len, 64);
+  for (isize i = 0; i < 64; i++)
+    ASSERT_EQ(big->data[i], (int)i);
+}
+
+/* Documented limit: an outer allocation larger than the scratch's advance puts
+ * the outer cursor past the scratch cursor, so later scratch allocations land
+ * inside the outer object. */
+UTEST(arena, scratch_outer_past_scratch_advance) {
+  enum { size = KB(8) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  Arena* out = arena;
+  ints* kept = New(out, ints);
+  int changed = 0;
+  {
+    Scratch(arena);
+    ints* tmp = New(arena, ints);
+    Push(arena, tmp, (int)1);
+    Clone(out, kept, tmp);          // outer cursor: base + 4
+    int* wide = New(out, int, 64);  // outer cursor: base + 260
+    for (int i = 0; i < 64; i++)
+      wide[i] = 0xAB;
+    ints* next = New(arena, ints);  // scratch cursor: base + 28, inside `wide`
+    Push(arena, next, (int)9);
+    for (int i = 0; i < 64; i++)
+      changed += wide[i] != 0xAB;
+  }
+  ASSERT_GT(changed, 0);
+}
+
+/* The outer write consumes the scratch prefix, including the clone source's
+ * descriptor: that object must not be used again (e.g. as a second source). */
+UTEST(arena, scratch_source_consumed_by_outer_write) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  Arena* out = arena;
+  ints* kept = New(out, ints);
+  {
+    Scratch(arena);
+    ints* tmp = New(arena, ints);
+    Push(arena, tmp, (int)5);
+
+    unsigned char before[sizeof(ints)];
+    memcpy(before, tmp, sizeof before);
+    Clone(out, kept, tmp);
+    ASSERT_NE(memcmp(before, tmp, sizeof before), 0);
+  }
+
+  ASSERT_EQ(kept->data[0], 5);
+}
+
 /* --- OOM handling --- */
 
 UTEST(arena, oom_null_returns_null) {

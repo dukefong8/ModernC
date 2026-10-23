@@ -1,0 +1,10 @@
+// EXPECT: not a pointer|member reference|invalid type argument
+// Slice operations require a pointer to the arena-owned descriptor. Passing
+// the descriptor by value would mutate a copy (and is rejected here).
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+void use(Arena* arena, ints s) {
+  Push(arena, s, 1);
+}

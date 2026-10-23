@@ -1,10 +1,10 @@
-// EXPECT: not compatible with any .*association
-// Reserve takes a movable Slice, not the fixed FixedSlice handle:
+// EXPECT: expected a movable Slice
+// Reserve takes a movable Slice, not the fixed FixedSlice value:
 // FixedKind matches no _Generic association.
 #include "arena.h"
 
 typedef FixedSlice(int) fints;
 
 void use(Arena* arena, fints b) {
-  Reserve(arena, b, 8);
+  Reserve(arena, &b, 8);
 }

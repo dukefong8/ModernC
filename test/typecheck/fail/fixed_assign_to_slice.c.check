@@ -1,5 +1,5 @@
 // EXPECT: array|incompatible|invalid
-// A FixedSlice handle is not implicitly a Slice.
+// A FixedSlice value is not implicitly a movable Slice.
 #include "arena.h"
 
 typedef Slice(int) ints;

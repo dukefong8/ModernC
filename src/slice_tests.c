@@ -54,7 +54,7 @@ UTEST(slice, from_array_copy_owns_storage) {
   Arena arena[] = {arena_init(mem, size)};
 
   int data[] = {10, 20, 30};
-  ints s = {};
+  ints* s = New(arena, ints);
   SliceFromArray(arena, s, data);
 
   ASSERT_TRUE(s->data != data);
@@ -72,7 +72,7 @@ UTEST(slice, from_array_copy_owns_storage) {
 }
 
 /* The copy form owns arena storage, so the source array's scope is irrelevant. */
-static void slice_copy_from_stack(Arena* arena, ints out) {
+static void slice_copy_from_stack(Arena* arena, ints* out) {
   int data[] = {5, 6, 7};
   SliceFromArray(arena, out, data);
 }
@@ -82,7 +82,7 @@ UTEST(slice, from_array_copy_survives_source_scope) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   slice_copy_from_stack(arena, s);  // source array is gone
   ASSERT_EQ(s->len, 3);
   ASSERT_EQ(s->data[0], 5);
@@ -95,7 +95,7 @@ UTEST(slice, from_array_copy_to_destination) {
   Arena arena[] = {arena_init(mem, size)};
 
   int data[] = {7, 8, 9};
-  ints s = {};
+  ints* s = New(arena, ints);
   SliceFromArray(arena, s, data);
 
   ASSERT_TRUE(s->data != data);
@@ -108,6 +108,56 @@ UTEST(slice, from_array_copy_to_destination) {
   ASSERT_EQ(top, 9);
 }
 
+/* --- Slice: arena-owned descriptors --- */
+
+struct SliceHolder {
+  ints items;   // inline descriptor: a plain struct field
+  ints* extra;  // pointer to a separately allocated descriptor
+};
+
+static void slice_append(Arena* arena, ints* s, int v) {
+  Push(arena, s, v);
+}
+
+UTEST(slice, descriptor_is_arena_owned) {
+  enum { size = KB(8) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  // New zero-initializes the descriptor into a valid empty slice; no stack
+  // descriptor or `{}` initializer is needed.
+  ints* s = New(arena, ints);
+  ASSERT_TRUE(s->data == NULL);
+  ASSERT_EQ(s->len, 0);
+  ASSERT_EQ(s->cap, 0);
+
+  // The descriptor pointer is what travels between functions. Mutations
+  // through it are visible to the caller.
+  slice_append(arena, s, 1);
+  ASSERT_EQ(s->len, 1);
+  ASSERT_EQ(s->data[0], 1);
+
+  // A New-allocated record can hold a slice inline or by pointer. Both are
+  // arena-owned and are passed to slice operations by address.
+  struct SliceHolder* h = New(arena, struct SliceHolder);
+  Push(arena, &h->items, 2);
+  h->extra = New(arena, ints);
+  Push(arena, h->extra, 3);
+  ASSERT_EQ(h->items.len, 1);
+  ASSERT_EQ(h->items.data[0], 2);
+  ASSERT_EQ(h->extra->data[0], 3);
+
+  // Growing the backing block relocates only `data`; the descriptor address
+  // stays fixed because the descriptor itself lives in the arena.
+  ints* descriptor = s;
+  for (int i = 0; i < 100; i++)
+    Push(arena, s, i);
+  ASSERT_TRUE(s == descriptor);
+  ASSERT_EQ(s->len, 101);
+  ASSERT_EQ(s->data[1], 0);
+  ASSERT_EQ(s->data[100], 99);
+}
+
 /* --- Slice: fixed (T[..]) via the two-argument Push --- */
 
 UTEST(slice, fixed_init_and_push) {
@@ -115,27 +165,27 @@ UTEST(slice, fixed_init_and_push) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  FixedSlice(int) s = {0};
-  SliceFixed(arena, s, 8);
-  ASSERT_EQ(s->len, 0);
-  ASSERT_EQ(s->cap, 8);
-  ASSERT_TRUE(s->data != NULL);
+  fints s = {0};
+  SliceFixed(arena, &s, 8);
+  ASSERT_EQ(s.len, 0);
+  ASSERT_EQ(s.cap, 8);
+  ASSERT_TRUE(s.data != NULL);
 
-  int* base = s->data;
+  int* base = s.data;
   byte* cur = arena->cur;
   for (int i = 0; i < 8; i++) {
-    isize idx = Push(s, i * 3);
+    isize idx = Push(&s, i * 3);
     ASSERT_EQ(idx, i);
-    ASSERT_EQ(s->data[idx], i * 3);
+    ASSERT_EQ(s.data[idx], i * 3);
   }
 
-  ASSERT_EQ(s->len, 8);
-  ASSERT_TRUE(s->data == base);  // fixed pushes never move
+  ASSERT_EQ(s.len, 8);
+  ASSERT_TRUE(s.data == base);  // fixed pushes never move
   ASSERT_EQ(arena->cur, cur);    // and never allocate
-  ASSERT_EQ(s->data[7], 21);
+  ASSERT_EQ(s.data[7], 21);
 
-  ints c = {};
-  Clone(arena, c, s);
+  ints* c = New(arena, ints);
+  Clone(arena, c, &s);
   ASSERT_EQ(c->len, 8);
   ASSERT_EQ(c->data[7], 21);
 
@@ -155,7 +205,7 @@ UTEST(slice, movable_reserve_at_tip_extends_in_place) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints t = {};
+  ints* t = New(arena, ints);
   Reserve(arena, t, 8);
   ASSERT_EQ(t->len, 0);
   int* base = t->data;
@@ -182,7 +232,7 @@ UTEST(slice, movable_within_cap_is_off_tip_safe) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints t = {};
+  ints* t = New(arena, ints);
   Reserve(arena, t, 4);
   int* base = t->data;
   Push(arena, t, 1);
@@ -206,15 +256,15 @@ UTEST(slice, class_fixed_to_movable) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  FixedSlice(int) b = {0};
-  SliceFixed(arena, b, 4);
-  ASSERT_EQ(Push(b, 1), 0);
-  ASSERT_EQ(Push(b, 2), 1);
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
+  ASSERT_EQ(Push(&b, 1), 0);
+  ASSERT_EQ(Push(&b, 2), 1);
 
-  ints copy = {};
-  Clone(arena, copy, b);
+  ints* copy = New(arena, ints);
+  Clone(arena, copy, &b);
   ASSERT_EQ(copy->len, 2);
-  ASSERT_TRUE(copy->data != b->data);
+  ASSERT_TRUE(copy->data != b.data);
   ASSERT_EQ(copy->data[1], 2);
   Push(arena, copy, 3);  // ordinary movable growth
   ASSERT_EQ(copy->len, 3);
@@ -229,19 +279,19 @@ UTEST(slice, class_movable_to_fixed_rebuild) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints g = {};
+  ints* g = New(arena, ints);
   Push(arena, g, 1);
   Push(arena, g, 2);
   Push(arena, g, 3);
 
-  FixedSlice(int) b = {0};
-  SliceFixed(arena, b, g->len);
+  fints b = {0};
+  SliceFixed(arena, &b, g->len);
   for (isize i = 0; i < g->len; i++)
-    ASSERT_EQ(Push(b, g->data[i]), i);
+    ASSERT_EQ(Push(&b, g->data[i]), i);
 
-  ASSERT_EQ(b->len, g->len);
-  ASSERT_EQ(b->cap, g->len);
-  ASSERT_EQ(b->data[2], 3);
+  ASSERT_EQ(b.len, g->len);
+  ASSERT_EQ(b.cap, g->len);
+  ASSERT_EQ(b.data[2], 3);
 }
 
 UTEST(slice, empty_slice_grows_from_zero) {
@@ -250,12 +300,12 @@ UTEST(slice, empty_slice_grows_from_zero) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   ASSERT_TRUE(s->data == NULL);
   ASSERT_EQ(s->len, 0);
   ASSERT_EQ(s->cap, 0);
 
-  ints empty = {};
+  ints* empty = New(arena, ints);
   Clone(arena, empty, s);
   ASSERT_TRUE(empty->data == NULL);
   ASSERT_EQ(empty->len, 0);
@@ -275,14 +325,14 @@ UTEST(slice, empty_arena_fixed) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  FixedSlice(int) b = {0};
-  SliceFixed(arena, b, 0);
-  ASSERT_TRUE(b->data == NULL);
-  ASSERT_EQ(b->len, 0);
-  ASSERT_EQ(b->cap, 0);
+  fints b = {0};
+  SliceFixed(arena, &b, 0);
+  ASSERT_TRUE(b.data == NULL);
+  ASSERT_EQ(b.len, 0);
+  ASSERT_EQ(b.cap, 0);
 
-  ints empty = {};
-  Clone(arena, empty, b);
+  ints* empty = New(arena, ints);
+  Clone(arena, empty, &b);
   ASSERT_TRUE(empty->data == NULL);
   ASSERT_EQ(empty->len, 0);
   ASSERT_EQ(empty->cap, 0);
@@ -294,7 +344,7 @@ UTEST(slice, empty_movable_grows_at_tip) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints t = {};
+  ints* t = New(arena, ints);
   ASSERT_TRUE(t->data == NULL);
   ASSERT_EQ(t->len, 0);
   ASSERT_EQ(t->cap, 0);
@@ -307,7 +357,7 @@ UTEST(slice, empty_movable_grows_at_tip) {
   ASSERT_EQ(t->data[0], 5);
 
   // Another empty slice at the new tip: Reserve may allocate in place.
-  ints r = {};
+  ints* r = New(arena, ints);
   byte* r_cur = arena->cur;
   Reserve(arena, r, 4);
   ASSERT_TRUE(r->cap >= 4);
@@ -321,7 +371,7 @@ UTEST(slice, empty_off_tip_can_grow) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints movable = {};
+  ints* movable = New(arena, ints);
   New(arena, char);  // off-tip before the empty movable slice grows
   byte* cur = arena->cur;
   Push(arena, movable, 1);
@@ -329,7 +379,7 @@ UTEST(slice, empty_off_tip_can_grow) {
   ASSERT_EQ((uintptr_t)movable->data % (uintptr_t)alignof(int), (uintptr_t)0);
   ASSERT_EQ(movable->data[0], 1);
 
-  ints t = {};
+  ints* t = New(arena, ints);
   New(arena, char);  // off-tip before the second empty slice grows
   byte* cur2 = arena->cur;
   Push(arena, t, 2);
@@ -343,7 +393,7 @@ UTEST(slice, overlapping_slices_nested_scratch) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints outer = {};
+  ints* outer = New(arena, ints);
   Push(arena, outer, 10);
   Push(arena, outer, 20);
   int* outer_data = outer->data;
@@ -352,22 +402,33 @@ UTEST(slice, overlapping_slices_nested_scratch) {
   {
     Scratch(arena);
 
-    ints inner = {};
+    ints* inner = New(arena, ints);
     for (int i = 1; i <= 4; i++)
       Push(arena, inner, i);
 
     // Overlapping structural descriptors over the same arena elements.
-    ints alias = {{.data = inner->data, .len = inner->len, .cap = inner->cap}};
-    ints head = {{.data = inner->data, .len = 2, .cap = 2}};
-    ints tail = {{.data = inner->data + 1, .len = inner->len - 1, .cap = inner->cap - 1}};
+    ints* alias = New(arena, ints);
+    alias->data = inner->data;
+    alias->len = inner->len;
+    alias->cap = inner->cap;
+
+    ints* head = New(arena, ints);
+    head->data = inner->data;
+    head->len = 2;
+    head->cap = 2;
+
+    ints* tail = New(arena, ints);
+    tail->data = inner->data + 1;
+    tail->len = inner->len - 1;
+    tail->cap = inner->cap - 1;
 
     alias->data[0] = 99;
     ASSERT_EQ(inner->data[0], 99);
     ASSERT_EQ(tail->data[0], 2);
 
     // Cloning overlapping views copies from their own ranges; no corruption.
-    ints tail_copy = {};
-    ints head_copy = {};
+    ints* tail_copy = New(arena, ints);
+    ints* head_copy = New(arena, ints);
     Clone(arena, head_copy, head);
     Clone(arena, tail_copy, tail);
     ASSERT_EQ(head_copy->len, 2);
@@ -379,7 +440,7 @@ UTEST(slice, overlapping_slices_nested_scratch) {
 
     {
       Scratch(arena);
-      ints deeper = {};
+      ints* deeper = New(arena, ints);
       Push(arena, deeper, 7);
       ASSERT_GT(arena->cur, (byte*)inner->data);
     }
@@ -410,7 +471,7 @@ UTEST(slice, class_movable_moves) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   Push(arena, s, 1);
   int* old = s->data;
 
@@ -431,7 +492,7 @@ UTEST(slice, movable_push_at_tip_grows_in_place) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints t = {};
+  ints* t = New(arena, ints);
   Reserve(arena, t, 2);
   int* base = t->data;
   byte* cur = arena->cur;
@@ -455,7 +516,7 @@ UTEST(slice, movable_reserve_at_tip_extends) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints t = {};
+  ints* t = New(arena, ints);
   Reserve(arena, t, 2);
   int* base = t->data;
 
@@ -469,7 +530,7 @@ UTEST(slice, movable_reserve_off_tip_within_cap) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints t = {};
+  ints* t = New(arena, ints);
   Reserve(arena, t, 4);
   Push(arena, t, 1);
 
@@ -496,7 +557,7 @@ UTEST(slice, movable_address_stable_after_at_tip_growth) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints t = {};
+  ints* t = New(arena, ints);
   Reserve(arena, t, 2);
   Push(arena, t, 10);
   int* first = &t->data[0];
@@ -514,14 +575,14 @@ UTEST(slice, fixed_push_unchecked) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  FixedSlice(int) b = {0};
-  SliceFixed(arena, b, 4);
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
 
-  isize idx = PushUnchecked(b, 7);
+  isize idx = PushUnchecked(&b, 7);
   ASSERT_EQ(idx, 0);
-  ASSERT_EQ(b->data[idx], 7);
-  ASSERT_EQ(b->len, 1);
-  ASSERT_EQ(b->data[0], 7);
+  ASSERT_EQ(b.data[idx], 7);
+  ASSERT_EQ(b.len, 1);
+  ASSERT_EQ(b.data[0], 7);
 }
 
 UTEST(slice, fixed_struct_clone) {
@@ -532,17 +593,224 @@ UTEST(slice, fixed_struct_clone) {
   typedef Slice(struct Point) points;
   typedef FixedSlice(struct Point) fpoints;
 
-  fpoints b = {};
-  SliceFixed(arena, b, 2);
-  ASSERT_EQ(Push(b, ((struct Point){1, 2})), 0);
-  ASSERT_EQ(Push(b, ((struct Point){3, 4})), 1);
+  fpoints b = {0};
+  SliceFixed(arena, &b, 2);
+  ASSERT_EQ(Push(&b, ((struct Point){1, 2})), 0);
+  ASSERT_EQ(Push(&b, ((struct Point){3, 4})), 1);
 
-  points copy = {};
-  Clone(arena, copy, b);
+  points* copy = New(arena, points);
+  Clone(arena, copy, &b);
   ASSERT_EQ(copy->len, 2);
   ASSERT_EQ(copy->data[1].x, 3);
   ASSERT_EQ(copy->data[1].y, 4);
   ASSERT_EQ(copy->data[0].x, 1);
+}
+
+/* --- Slice: pass/store rubric (movable by pointer, fixed by value) --- */
+
+struct FixedRecord {
+  fints values;
+};
+
+static fints fixed_build(Arena* arena, isize cap, isize len) {
+  fints b = {0};
+  SliceFixed(arena, &b, cap);
+  for (isize i = 0; i < len; i++) {
+    isize idx = Push(&b, (int)(i * 10));
+    (void)idx;
+  }
+  return b;
+}
+
+static int fixed_sum(fints view) {
+  int sum = 0;
+  for (isize i = 0; i < view.len; i++)
+    sum += view.data[i];
+  return sum;
+}
+
+static isize fixed_push_copy(fints view, int v) {
+  return Push(&view, v);
+}
+
+UTEST(slice, fixed_by_value_aliasing_and_mutation) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  fints b = fixed_build(arena, 6, 4);
+  ASSERT_EQ(b.len, 4);
+  ASSERT_EQ(b.cap, 6);
+  ASSERT_EQ(fixed_sum(b), 60);
+
+  // Storing the fixed descriptor by value is the supported model: a local
+  // copy and a struct field both alias the same fixed backing block.
+  fints copy = b;
+  struct FixedRecord rec = {.values = b};
+  ASSERT_TRUE(copy.data == b.data);
+  ASSERT_TRUE(rec.values.data == b.data);
+  ASSERT_EQ(copy.len, b.len);
+
+  // Data writes are shared because the backing block is shared.
+  copy.data[0] = 99;
+  ASSERT_EQ(b.data[0], 99);
+
+  // Length/capacity are descriptor-local: appending through one copy does
+  // not advance the others, but writes the same backing block.
+  ASSERT_EQ(Push(&copy, 40), 4);
+  ASSERT_EQ(copy.len, 5);
+  ASSERT_EQ(b.len, 4);
+  ASSERT_EQ(rec.values.len, 4);
+  ASSERT_EQ(b.data[4], 40);
+
+  // A by-value parameter is a read view plus a local cursor. It can read and
+  // write shared data, but its append does not update the caller's len.
+  ASSERT_EQ(fixed_push_copy(b, 50), 4);
+  ASSERT_EQ(b.len, 4);
+  ASSERT_EQ(b.data[4], 50);
+}
+
+UTEST(slice, fixed_by_value_lifetime) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  // The descriptor is returned by value; its backing block is arena-owned.
+  fints b = fixed_build(arena, 4, 3);
+  ASSERT_EQ(b.len, 3);
+  ASSERT_EQ(b.data[2], 20);
+
+  New(arena, char, KB(1));  // unrelated allocation does not move fixed data
+  ASSERT_EQ(fixed_sum(b), 30);
+
+  // The value descriptor itself survives reset (it is on the stack), while
+  // the arena backing does not. Do not dereference b.data after reset.
+  arena_reset(arena);
+  ASSERT_TRUE(b.data != NULL);
+  ASSERT_EQ(b.len, 3);
+  ASSERT_EQ(b.cap, 4);
+}
+
+UTEST(slice, movable_descriptor_lifetime) {
+  enum { size = KB(8) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+  Push(arena, s, 1);
+  int* data = s->data;
+
+  {
+    Scratch(arena);
+    New(arena, char, KB(1));
+  }
+
+  // The descriptor and its data both live in the outer arena range, so a
+  // nested Scratch does not invalidate either.
+  ASSERT_TRUE(s->data == data);
+  ASSERT_EQ(s->data[0], 1);
+
+  // The descriptor is arena-owned, not a stack temporary: pointer aliases
+  // stay valid for the arena's lifetime. After reset both descriptor and
+  // data are invalid and must not be touched.
+  ints* alias = s;
+  ASSERT_TRUE(alias == s);
+  arena_reset(arena);
+}
+
+UTEST(slice, movable_by_pointer_aliasing_and_relocation) {
+  enum { size = KB(8) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  // The supported movable model is one arena-owned descriptor, passed by
+  // pointer. Pointer aliases observe every mutation, including relocation.
+  ints* s = New(arena, ints);
+  Push(arena, s, 1);
+  Push(arena, s, 2);
+  ints* alias = s;
+  ASSERT_TRUE(alias == s);
+  ASSERT_EQ(alias->len, 2);
+
+  // A value copy compiles, but it is not the storage model: it pins the old
+  // backing pointer and does not follow later growth.
+  ints copy = *s;
+  ASSERT_TRUE(copy.data == s->data);
+  ASSERT_EQ(copy.len, 2);
+
+  New(arena, char);  // take the movable slice off the arena tip
+  while (s->len < s->cap)
+    Push(arena, s, 0);
+  int* old_data = s->data;
+  Push(arena, s, 99);  // full and off-tip: relocate
+
+  ASSERT_TRUE(s->data != old_data);
+  ASSERT_TRUE(copy.data == old_data);  // value copy still points at old block
+  ASSERT_TRUE(alias->data == s->data); // pointer alias follows the descriptor
+  ASSERT_EQ(alias->len, s->len);
+}
+
+UTEST(slice, fixed_never_relocates_movable_does) {
+  enum { size = KB(8) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  fints f = {0};
+  SliceFixed(arena, &f, 8);
+  int* fixed_base = f.data;
+
+  ints* m = New(arena, ints);
+  Push(arena, m, 1);
+  int* movable_base = m->data;
+
+  New(arena, char);  // both are off the arena tip
+  byte* cur = arena->cur;
+
+  // Fixed appends never allocate or relocate, even off-tip.
+  for (int i = 0; i < 8; i++)
+    ASSERT_EQ(Push(&f, i), i);
+  ASSERT_TRUE(f.data == fixed_base);
+  ASSERT_EQ(arena->cur, cur);
+
+  // Movable growth off-tip relocates its backing block.
+  while (m->len < m->cap)
+    Push(arena, m, 0);
+  Push(arena, m, 99);
+  ASSERT_TRUE(m->data != movable_base);
+}
+
+UTEST(slice, at_tip_query) {
+  enum { size = KB(8) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* m = New(arena, ints);
+  ASSERT_FALSE(SliceAtTip(arena, m));  // empty: no backing block
+
+  Push(arena, m, 1);
+  ASSERT_TRUE(SliceAtTip(arena, m));
+
+  fints f = {0};
+  SliceFixed(arena, &f, 4);
+  ASSERT_TRUE(SliceAtTip(arena, &f));   // fixed block now ends at the tip
+  ASSERT_FALSE(SliceAtTip(arena, m));   // movable block is now off-tip
+
+  // Off-tip reserve relocates the movable slice to the tip.
+  int* old = m->data;
+  Reserve(arena, m, 64);
+  ASSERT_TRUE(m->data != old);
+  ASSERT_TRUE(SliceAtTip(arena, m));
+  ASSERT_FALSE(SliceAtTip(arena, &f));
+
+  // At-tip reserve extends in place and stays at the tip.
+  old = m->data;
+  Reserve(arena, m, 128);
+  ASSERT_TRUE(m->data == old);
+  ASSERT_TRUE(SliceAtTip(arena, m));
+
+  New(arena, char);  // both blocks are now behind the bump pointer
+  ASSERT_FALSE(SliceAtTip(arena, m));
+  ASSERT_FALSE(SliceAtTip(arena, &f));
 }
 
 /* --- Slice: Pop (structural shrink) --- */
@@ -552,7 +820,7 @@ UTEST(slice, pop_returns_last_and_decrements) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   Push(arena, s, 10);
   Push(arena, s, 20);
   Push(arena, s, 30);
@@ -588,23 +856,23 @@ UTEST(slice, pop_fixed) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  FixedSlice(int) b = {0};
-  SliceFixed(arena, b, 4);
-  int* base = b->data;
-  ASSERT_EQ(Push(b, 1), 0);
-  ASSERT_EQ(Push(b, 2), 1);
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
+  int* base = b.data;
+  ASSERT_EQ(Push(&b, 1), 0);
+  ASSERT_EQ(Push(&b, 2), 1);
 
   New(arena, char);  // off-tip: Pop must still shrink in place
   int top = 0;
-  ASSERT_TRUE(Pop(b, &top));
+  ASSERT_TRUE(Pop(&b, &top));
   ASSERT_EQ(top, 2);
-  ASSERT_EQ(b->len, 1);
-  ASSERT_TRUE(b->data == base);
+  ASSERT_EQ(b.len, 1);
+  ASSERT_TRUE(b.data == base);
 
-  ASSERT_EQ(Push(b, 3), 1);  // fixed push after pop reuses the slot
-  ASSERT_EQ(b->len, 2);
-  ASSERT_EQ(b->data[1], 3);
-  ASSERT_TRUE(b->data == base);
+  ASSERT_EQ(Push(&b, 3), 1);  // fixed push after pop reuses the slot
+  ASSERT_EQ(b.len, 2);
+  ASSERT_EQ(b.data[1], 3);
+  ASSERT_TRUE(b.data == base);
 }
 
 UTEST(slice, pop_struct_value) {
@@ -612,7 +880,7 @@ UTEST(slice, pop_struct_value) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  points s = {};
+  points* s = New(arena, points);
   Push(arena, s, ((struct Point){1, 2}));
 
   struct Point top;
@@ -628,7 +896,7 @@ UTEST(slice, push_then_pop_returns_same_value) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   Push(arena, s, 7);  // a value that must survive the round trips
   for (int v = -3; v <= 3; v++) {
     isize idx = Push(arena, s, v);
@@ -641,7 +909,7 @@ UTEST(slice, push_then_pop_returns_same_value) {
     ASSERT_EQ(s->data[0], 7);
   }
 
-  points ps = {};
+  points* ps = New(arena, points);
   Push(arena, ps, ((struct Point){3, 4}));
   struct Point p;
   ASSERT_TRUE(Pop(ps, &p));
@@ -655,7 +923,7 @@ UTEST(slice, pop_then_push_is_noop) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 4; i++)
     Push(arena, s, i * 10);
   int* data = s->data;
@@ -675,25 +943,25 @@ UTEST(slice, pop_then_push_is_noop) {
     ASSERT_EQ(s->data[i], (int)(i * 10));
 
   // The same round trip is a no-op for a fixed slice within its cap.
-  FixedSlice(int) b = {0};
-  SliceFixed(arena, b, 4);
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
   for (int i = 0; i < 3; i++)
-    ASSERT_EQ(Push(b, i + 1), i);
-  int* bdata = b->data;
-  isize blen = b->len;
-  isize bcap = b->cap;
-  int blast = b->data[blen - 1];
+    ASSERT_EQ(Push(&b, i + 1), i);
+  int* bdata = b.data;
+  isize blen = b.len;
+  isize bcap = b.cap;
+  int blast = b.data[blen - 1];
 
   int bpopped = 0;
-  ASSERT_TRUE(Pop(b, &bpopped));
+  ASSERT_TRUE(Pop(&b, &bpopped));
   ASSERT_EQ(bpopped, blast);
-  ASSERT_EQ(Push(b, bpopped), blen - 1);
+  ASSERT_EQ(Push(&b, bpopped), blen - 1);
 
-  ASSERT_EQ(b->len, blen);
-  ASSERT_EQ(b->cap, bcap);
-  ASSERT_TRUE(b->data == bdata);
+  ASSERT_EQ(b.len, blen);
+  ASSERT_EQ(b.cap, bcap);
+  ASSERT_TRUE(b.data == bdata);
   for (isize i = 0; i < blen; i++)
-    ASSERT_EQ(b->data[i], (int)(i + 1));
+    ASSERT_EQ(b.data[i], (int)(i + 1));
 }
 
 UTEST(slice, movable_pop_then_push_is_noop) {
@@ -701,7 +969,7 @@ UTEST(slice, movable_pop_then_push_is_noop) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 16; i++)
     Push(arena, s, i);
   int* before = s->data;
@@ -746,7 +1014,7 @@ UTEST(slice, push_grow_move_then_pop) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 16; i++)
     Push(arena, s, i);
   int* old_data = s->data;
@@ -782,48 +1050,49 @@ UTEST(slice, class_fixed_push_full_returns_minus_one) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  FixedSlice(int) b = {0};
-  SliceFixed(arena, b, 2);
-  ASSERT_EQ(Push(b, 10), 0);
-  ASSERT_EQ(Push(b, 20), 1);
-  ASSERT_EQ(b->len, 2);
-  ASSERT_EQ(Push(b, 30), -1);
-  ASSERT_EQ(b->len, 2);
-  ASSERT_EQ(b->data[0], 10);
-  ASSERT_EQ(b->data[1], 20);
+  fints b = {0};
+  SliceFixed(arena, &b, 2);
+  ASSERT_EQ(Push(&b, 10), 0);
+  ASSERT_EQ(Push(&b, 20), 1);
+  ASSERT_EQ(b.len, 2);
+  ASSERT_EQ(Push(&b, 30), -1);
+  ASSERT_EQ(b.len, 2);
+  ASSERT_EQ(b.data[0], 10);
+  ASSERT_EQ(b.data[1], 20);
 
   // Capacity 0 is a valid empty fixed slice: every Push reports -1.
-  FixedSlice(int) e = {0};
-  SliceFixed(arena, e, 0);
-  ASSERT_EQ(Push(e, 1), -1);
-  ASSERT_EQ(e->len, 0);
+  fints e = {0};
+  SliceFixed(arena, &e, 0);
+  ASSERT_EQ(Push(&e, 1), -1);
+  ASSERT_EQ(e.len, 0);
 }
 
-UTEST(slice, move_transfer_keeps_identity) {
-  enum { size = KB(4) };
+UTEST(slice, movable_push_without_arena_is_no_grow) {
+  enum { size = KB(8) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
-  Push(arena, s, 1);
-  Push(arena, s, 2);
+  ints* s = New(arena, ints);
+  Reserve(arena, s, 4);  // reserve before taking references
+  int* base = s->data;
 
-  ints moved = {};
-  SliceMoveAssign(moved, s);
-  ASSERT_EQ(moved->len, 2);
-  ASSERT_EQ(moved->data[0], 1);
-  ASSERT_EQ(moved->data[1], 2);
-  ASSERT_EQ(s->len, 0);  // source cleared
+  ASSERT_EQ(Push(s, 10), 0);
+  ASSERT_EQ(Push(s, 20), 1);
 
-  ints target = {};
-  SliceMoveAssign(target, moved);
-  ASSERT_EQ(target->len, 2);
-  ASSERT_EQ(target->data[1], 2);
-  ASSERT_EQ(moved->len, 0);
+  New(arena, char);  // s is off-tip; 2-arg pushes must still not move it
+  byte* cur = arena->cur;
+  ASSERT_EQ(Push(s, 30), 2);
+  ASSERT_EQ(Push(s, 40), 3);
+  ASSERT_EQ(Push(s, 50), -1);  // full: no append, no growth
+  ASSERT_TRUE(s->data == base);
+  ASSERT_EQ(s->len, 4);
+  ASSERT_EQ(arena->cur, cur);
+  ASSERT_EQ(base[3], 40);
 
-  Push(arena, target, 3);  // target is bound and writable
-  ASSERT_EQ(target->len, 3);
-  ASSERT_EQ(target->data[2], 3);
+  // The 3-arg form remains the growth path and may relocate.
+  ASSERT_EQ(Push(arena, s, 50), 4);
+  ASSERT_TRUE(s->data != base);
+  ASSERT_EQ(s->data[4], 50);
 }
 
 UTEST(slice, pop_empty_is_safe) {
@@ -832,7 +1101,7 @@ UTEST(slice, pop_empty_is_safe) {
   Arena arena[] = {arena_init(mem, size)};
 
   // Empty zero-capacity slice: false and *out unchanged.
-  ints s = {};
+  ints* s = New(arena, ints);
   int top = 123;
   ASSERT_FALSE(Pop(s, &top));
   ASSERT_EQ(top, 123);
@@ -854,19 +1123,19 @@ UTEST(slice, pop_empty_is_safe) {
   ASSERT_TRUE(s->data == data);
 
   // A fixed slice has the same safe empty behavior.
-  FixedSlice(int) b = {0};
-  SliceFixed(arena, b, 4);
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
   int btop = 123;
-  ASSERT_FALSE(Pop(b, &btop));
+  ASSERT_FALSE(Pop(&b, &btop));
   ASSERT_EQ(btop, 123);
-  ASSERT_EQ(Push(b, 9), 0);
-  ASSERT_TRUE(Pop(b, &btop));
+  ASSERT_EQ(Push(&b, 9), 0);
+  ASSERT_TRUE(Pop(&b, &btop));
   ASSERT_EQ(btop, 9);
   btop = 123;
-  ASSERT_FALSE(Pop(b, &btop));
+  ASSERT_FALSE(Pop(&b, &btop));
   ASSERT_EQ(btop, 123);
-  ASSERT_EQ(b->len, 0);
-  ASSERT_EQ(b->cap, 4);
+  ASSERT_EQ(b.len, 0);
+  ASSERT_EQ(b.cap, 4);
 }
 
 UTEST(slice, clone_full) {
@@ -874,11 +1143,11 @@ UTEST(slice, clone_full) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 5; i++)
     Push(arena, s, i * 10);
 
-  ints copy = {};
+  ints* copy = New(arena, ints);
   Clone(arena, copy, s);
   ASSERT_EQ(copy->len, 5);
   for (int i = 0; i < 5; i++)
@@ -891,11 +1160,11 @@ UTEST(slice, clone_subslice) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 10; i++)
     Push(arena, s, i);
 
-  ints mid = {};
+  ints* mid = New(arena, ints);
   Clone(arena, mid, s, 3, 4);
   ASSERT_EQ(mid->len, 4);
   ASSERT_EQ(mid->data[0], 3);
@@ -909,7 +1178,7 @@ UTEST(slice, push_grow_many) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 200; i++)
     Push(arena, s, i);
 
@@ -932,7 +1201,7 @@ UTEST(slice, push_unchecked_fills_reserved) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   Reserve(arena, s, s->len + 200);
   isize cap = s->cap;
   byte* cur = arena->cur;
@@ -954,7 +1223,7 @@ UTEST(slice, push_unchecked_shares_state_with_push) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   Reserve(arena, s, 4);
   PushUnchecked(s, 1);
   PushUnchecked(s, 2);
@@ -977,7 +1246,7 @@ UTEST(slice, push_unchecked_top_up_partially_filled) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 3; i++)
     Push(arena, s, i * 10);
 
@@ -1002,7 +1271,7 @@ UTEST(slice, reserve_grows_up_front) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   Reserve(arena, s, 200);
   ASSERT_TRUE(s->cap >= 200);
   ASSERT_EQ(s->len, 0);
@@ -1021,7 +1290,7 @@ UTEST(slice, reserve_preserves_elements) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 3; i++)
     Push(arena, s, i * 10);
 
@@ -1044,7 +1313,7 @@ UTEST(slice, reserve_is_grow_only) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   Push(arena, s, 1);
 
   isize cap = s->cap;
@@ -1060,7 +1329,7 @@ UTEST(slice, reserve_at_tip_extends) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 3; i++)
     Push(arena, s, i);
 
@@ -1078,8 +1347,8 @@ UTEST(slice, clone_empty) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints copy = {};
-  ints s = {};
+  ints* copy = New(arena, ints);
+  ints* s = New(arena, ints);
   Clone(arena, copy, s);
   ASSERT_EQ(copy->len, 0);
   ASSERT_TRUE(copy->data == NULL);
@@ -1090,29 +1359,29 @@ UTEST(slice, clone_evaluates_args_once) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   for (int i = 0; i < 5; i++)
     Push(arena, s, i * 10);
 
   slice_eval_calls = 0;
-  ints full = {};
-  Clone(arena, full, *slice_eval_slice(&s));
+  ints* full = New(arena, ints);
+  Clone(arena, full, slice_eval_slice(s));
   ASSERT_EQ(slice_eval_calls, 1);
   ASSERT_EQ(full->len, 5);
 
   slice_eval_calls = 0;
   int start = 2;
-  ints rest = {};
-  Clone(arena, rest, *slice_eval_slice(&s), start++);
+  ints* rest = New(arena, ints);
+  Clone(arena, rest, slice_eval_slice(s), start++);
   ASSERT_EQ(slice_eval_calls, 1);
   ASSERT_EQ(start, 3);
   ASSERT_EQ(rest->len, 3);
   ASSERT_EQ(rest->data[0], 20);
 
   // The destination and arena are evaluated once too.
-  ints tapped = {};
+  ints* tapped = New(arena, ints);
   slice_eval_calls = 0;
-  Clone(slice_eval_arena(arena), *slice_eval_slice(&tapped), *slice_eval_slice(&s));
+  Clone(slice_eval_arena(arena), slice_eval_slice(tapped), slice_eval_slice(s));
   ASSERT_EQ(slice_eval_calls, 3);  // arena, destination, source
   ASSERT_EQ(tapped->len, 5);
 }
@@ -1122,42 +1391,38 @@ UTEST(slice, macro_args_evaluated_once) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   slice_eval_calls = 0;
-  isize idx = Push(slice_eval_arena(arena), *slice_eval_slice(&s), slice_eval_int(7));
+  isize idx = Push(slice_eval_arena(arena), slice_eval_slice(s), slice_eval_int(7));
   ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, value
   ASSERT_EQ(idx, 0);
   ASSERT_EQ(s->data[idx], 7);
   ASSERT_EQ(s->len, 1);
 
   slice_eval_calls = 0;
-  Reserve(slice_eval_arena(arena), *slice_eval_slice(&s), slice_eval_cap(16));
+  Reserve(slice_eval_arena(arena), slice_eval_slice(s), slice_eval_cap(16));
   ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, min_cap
+
+  slice_eval_calls = 0;
+  (void)SliceAtTip(slice_eval_arena(arena), slice_eval_slice(s));
+  ASSERT_EQ(slice_eval_calls, 2);  // arena, slice
 
   int out = 0;
   slice_eval_calls = 0;
-  bool popped = Pop(*slice_eval_slice(&s), slice_eval_out(&out));
+  bool popped = Pop(slice_eval_slice(s), slice_eval_out(&out));
   ASSERT_TRUE(popped);
   ASSERT_EQ(out, 7);
   ASSERT_EQ(slice_eval_calls, 2);  // slice, out
 
-  ints moved = {};
-  Push(arena, s, 8);  // seed a payload (not part of the count)
+  fints b = {0};
   slice_eval_calls = 0;
-  SliceMoveAssign(*slice_eval_slice(&moved), *slice_eval_slice(&s));
-  ASSERT_EQ(slice_eval_calls, 2);  // destination, source
-  ASSERT_EQ(moved->len, 1);
-  ASSERT_EQ(s->len, 0);
-
-  fints b = {};
-  slice_eval_calls = 0;
-  SliceFixed(slice_eval_arena(arena), *slice_eval_fints(&b), slice_eval_cap(4));
+  SliceFixed(slice_eval_arena(arena), slice_eval_fints(&b), slice_eval_cap(4));
   ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, capacity
 
   int data[] = {1, 2};
-  ints from = {};
+  ints* from = New(arena, ints);
   slice_eval_calls = 0;
-  SliceFromArray(slice_eval_arena(arena), *slice_eval_slice(&from), data);
+  SliceFromArray(slice_eval_arena(arena), slice_eval_slice(from), data);
   ASSERT_EQ(slice_eval_calls, 2);  // arena, destination
   ASSERT_EQ(from->len, 2);
   ASSERT_EQ(from->data[1], 2);
@@ -1172,7 +1437,7 @@ UTEST(slice, multi_token_types) {
 
   // Multi-token element types: struct, unsigned, pointer. Slice(T) spells
   // them as written, no intermediate typedef needed.
-  points ps = {};
+  points* ps = New(arena, points);
   Push(arena, ps, ((struct Point){1, 2}));
   Push(arena, ps, ((struct Point){3, 4}));
   ASSERT_EQ(ps->len, 2);
@@ -1181,12 +1446,12 @@ UTEST(slice, multi_token_types) {
   ASSERT_EQ(ps->data[1].x, 3);
   ASSERT_EQ(ps->data[1].y, 4);
 
-  uints us = {};
+  uints* us = New(arena, uints);
   Push(arena, us, 7u);
   ASSERT_EQ(us->data[0], 7u);
 
   const char* hello = "hello";
-  strs ss = {};
+  strs* ss = New(arena, strs);
   Push(arena, ss, hello);
   ASSERT_EQ(ss->len, 1);
   ASSERT_TRUE(strcmp(ss->data[0], "hello") == 0);
@@ -1199,8 +1464,8 @@ UTEST(slice, duplicate_expansion) {
 
   // ints and ints_again are the same element type expanded twice at file
   // scope; each expansion is usable on its own.
-  ints a = {};
-  ints_again b = {0};
+  ints* a = New(arena, ints);
+  ints_again* b = New(arena, ints_again);
   Push(arena, a, 1);
   Push(arena, b, 2);
   ASSERT_EQ(a->len, 1);
@@ -1214,7 +1479,7 @@ UTEST(slice, push_value_struct) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  points ps = {};
+  points* ps = New(arena, points);
   struct Point p = {5, 6};
   Push(arena, ps, p);
 
@@ -1257,7 +1522,7 @@ UTEST(slice, build_element_in_place) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  chunks cs = {};
+  chunks* cs = New(arena, chunks);
 
   // Placeholder, then stream into it: three successive fills, as a decoder
   // would, each starting where the last stopped. Everything is reached by
@@ -1279,7 +1544,7 @@ UTEST(slice, fill_survives_grow) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  chunks cs = {};
+  chunks* cs = New(arena, chunks);
 
   isize ci = Push(arena, cs, (Chunk){0});
   At(cs, ci).n = 42;
@@ -1307,7 +1572,7 @@ UTEST(slice, data_is_typed) {
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
-  ints s = {};
+  ints* s = New(arena, ints);
   Push(arena, s, 7);
 
   // data is T*, so elements are reachable without a macro or a cast: s->data[i]
@@ -1329,8 +1594,8 @@ UTEST(slice, layout_zero_overhead) {
   // memcpys, whatever the element type.
   _Static_assert(sizeof(ints) == sizeof(SliceInternal), "slice size");
   _Static_assert(alignof(ints) == alignof(SliceInternal), "slice align");
-  _Static_assert(offsetof(__typeof__(*((ints){0})), data) == offsetof(SliceInternal, data), "data offset");
-  _Static_assert(offsetof(__typeof__(*((ints){0})), len) == offsetof(SliceInternal, len), "len offset");
-  _Static_assert(offsetof(__typeof__(*((ints){0})), cap) == offsetof(SliceInternal, cap), "cap offset");
+  _Static_assert(offsetof(ints, data) == offsetof(SliceInternal, data), "data offset");
+  _Static_assert(offsetof(ints, len) == offsetof(SliceInternal, len), "len offset");
+  _Static_assert(offsetof(ints, cap) == offsetof(SliceInternal, cap), "cap offset");
   _Static_assert(sizeof(SliceInternal) == sizeof(void*) + 2 * sizeof(isize), "three words");
 }

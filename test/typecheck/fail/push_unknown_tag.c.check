@@ -1,12 +1,12 @@
-// EXPECT: not compatible with any .*association
+// EXPECT: expected a movable Slice
 // A hand-written descriptor with an unknown tag must not silently take the
-// movable path: the 3-argument Push names both known tags and has no default.
+// movable path: the 3-argument Push requires a MovableKind tag.
 #include "arena.h"
 
 typedef struct { unsigned char _; } WrongKind;
-typedef __typeof__(( (union { struct { int *data; long len, cap; }; WrongKind _kind; }[1]){} )) Weird;
+typedef union { struct { int *data; long len, cap; }; WrongKind _kind; } Weird;
 
 void use(Arena* arena) {
-  Weird w = {};
+  Weird* w = New(arena, Weird);
   Push(arena, w, 1);
 }

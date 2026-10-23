@@ -1,12 +1,12 @@
 // EXPECT: array argument must be a non-empty array
-// C has no standard zero-length array; use the empty slice initializer
-// {.data = NULL, .len = 0, .cap = 0} instead.
+// C has no standard zero-length array; leave a New-allocated descriptor
+// empty (zeroed) instead.
 #include "arena.h"
 
 typedef Slice(int) ints;
 
 void use(Arena* arena) {
   int data[0];
-  ints s = {};
+  ints* s = New(arena, ints);
   SliceFromArray(arena, s, data);
 }

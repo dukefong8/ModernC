@@ -142,7 +142,7 @@ astr test_astr(Arena arena[static 1]) {
 
 typedef Slice(int64_t) i64s;
 
-static void test_slice(Arena* arena, i64s fibs) {
+static void test_slice(Arena* arena, i64s* fibs) {
   ALOG(arena);
   {
     Scratch(arena);
@@ -259,7 +259,7 @@ int main(int argc, const char* argv[]) {
   test_pqueue(*arena);
   ALOG(arena);
 
-  i64s fibs = {};
+  i64s* fibs = New(arena, i64s);
   test_slice(arena, fibs);
   Push(arena, fibs, (int64_t)0);
   puts(">>>fibs");

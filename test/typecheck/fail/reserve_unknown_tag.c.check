@@ -1,12 +1,12 @@
-// EXPECT: not compatible with any .*association
-// Same as push_unknown_tag, for Reserve: an unknown tag is a constraint
+// EXPECT: expected a movable Slice
+// Same as push_unknown_tag, for Reserve: an unknown tag is a static-assert
 // error, not a silent movable reserve.
 #include "arena.h"
 
 typedef struct { unsigned char _; } WrongKind;
-typedef __typeof__(( (union { struct { int *data; long len, cap; }; WrongKind _kind; }[1]){} )) Weird;
+typedef union { struct { int *data; long len, cap; }; WrongKind _kind; } Weird;
 
 void use(Arena* arena) {
-  Weird w = {};
+  Weird* w = New(arena, Weird);
   Reserve(arena, w, 8);
 }

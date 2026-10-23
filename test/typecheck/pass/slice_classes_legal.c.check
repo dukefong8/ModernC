@@ -7,20 +7,22 @@ typedef FixedSlice(int) fints;
 int use(Arena* arena) {
   /* movable: array copy + Clone destination */
   int stack_data[] = {1, 2, 3};
-  ints fixed = {};
+  ints* fixed = New(arena, ints);
   SliceFromArray(arena, fixed, stack_data);
-  ints movable = {};
+  ints* movable = New(arena, ints);
   Clone(arena, movable, fixed);
   Reserve(arena, fixed, 8);
   Push(arena, fixed, 10);
 
   /* fixed */
-  fints b = {};
-  SliceFixed(arena, b, 4);
-  (void)Push(b, 1);
-  (void)Push(b, 2);
-  ints out = {};
-  Clone(arena, out, b);
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
+  isize i0 = Push(&b, 1);
+  isize i1 = Push(&b, 2);
+  (void)i0;
+  (void)i1;
+  ints* out = New(arena, ints);
+  Clone(arena, out, &b);
 
-  return fixed->data[0] + movable->data[0] + b->data[0] + out->data[0];
+  return fixed->data[0] + movable->data[0] + b.data[0] + out->data[0];
 }

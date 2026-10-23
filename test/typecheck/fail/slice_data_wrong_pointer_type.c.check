@@ -4,6 +4,6 @@
 
 typedef Slice(int) ints;
 
-void use(ints s, char* bytes) {
+void use(ints *s, char* bytes) {
   s->data = bytes;
 }
