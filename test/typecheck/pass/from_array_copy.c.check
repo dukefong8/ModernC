@@ -10,7 +10,7 @@ typedef Slice(struct Point) points;
 void copy_expr(Arena* arena, ints *out) {
   int data[] = {1, 2, 3};
   SliceFromArray(arena, out, data);
-  Push(arena, out, 4);
+  *PushGrow(arena, out) = 4;
 }
 
 int use(Arena* arena) {

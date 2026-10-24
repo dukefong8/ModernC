@@ -1,0 +1,13 @@
+// Push(arena, s) grows only when the slice ends at the arena tip.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+int use(Arena* arena) {
+  ints* s = New(arena, ints);
+  Reserve(arena, s, 4);
+  for (int i = 0; i < 4; i++)
+    *Push(arena, s) = i;
+  *Push(arena, s) = 4;  // at tip: extends in place
+  return s->data[4];
+}

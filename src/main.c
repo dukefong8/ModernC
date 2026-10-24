@@ -163,20 +163,20 @@ static void test_slice(Arena* arena, i64s* fibs) {
   SliceFromArray(arena, fibs, data);
   Clone(arena, fibs, fibs, 0, 2);
   for (int i = 2; i < 9; ++i) {
-    Push(arena, fibs, fibs->data[i - 2] + fibs->data[i - 1]);
+    *PushGrow(arena, fibs) = fibs->data[i - 2] + fibs->data[i - 1];
   }
   ALOG(arena);
   {
     Scratch(arena);
     ALOG(arena);
     for (int i = 9; i < 11; ++i) {
-      Push(arena, fibs, fibs->data[i - 2] + fibs->data[i - 1]);
+      *PushGrow(arena, fibs) = fibs->data[i - 2] + fibs->data[i - 1];
     }
     ALOG(arena);
   }
   ALOG(arena);
   for (int i = 11; i < 29; ++i) {
-    Push(arena, fibs, fibs->data[i - 2] + fibs->data[i - 1]);
+    *PushGrow(arena, fibs) = fibs->data[i - 2] + fibs->data[i - 1];
   }
   ALOG(arena);
 }
@@ -261,7 +261,7 @@ int main(int argc, const char* argv[]) {
 
   i64s* fibs = New(arena, i64s);
   test_slice(arena, fibs);
-  Push(arena, fibs, (int64_t)0);
+  *PushGrow(arena, fibs) = (int64_t)0;
   puts(">>>fibs");
   for (int i = 0; i < fibs->len; ++i)
     printf("%lld,", (long long)fibs->data[i]);

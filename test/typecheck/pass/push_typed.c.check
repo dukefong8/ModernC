@@ -1,4 +1,4 @@
-// Push accepts exactly-matching element types and yields the new index.
+// Push returns a typed slot; the store is an ordinary C assignment.
 #include "arena.h"
 
 struct A { int v; };
@@ -9,12 +9,12 @@ typedef Slice(const char*) strs;
 
 void use(Arena* arena, as *xs, ints *is, strs *ss) {
   struct A a = {7};
-  isize p = Push(arena, xs, a);
-  At(xs, p).v = a.v;
+  struct A* p = PushGrow(arena, xs);
+  *p = a;
 
-  isize q = Push(arena, is, 42);
-  At(is, q) += 1;
+  int* q = PushGrow(arena, is);
+  *q = 42;
 
   const char* lit = "hi";
-  Push(arena, ss, lit);
+  *PushGrow(arena, ss) = lit;
 }

@@ -1,5 +1,5 @@
 // EXPECT: expected a movable Slice
-// The growable Push requires a plain movable Slice, not a FixedSlice value:
+// PushGrow requires a plain movable Slice, not a FixedSlice value:
 // FixedKind matches no _Generic association.
 #include "arena.h"
 
@@ -8,5 +8,5 @@ typedef FixedSlice(int) fints;
 void use(Arena* arena) {
   fints b = {0};
   SliceFixed(arena, &b, 4);
-  Push(arena, &b, 1);
+  *PushGrow(arena, &b) = 1;
 }

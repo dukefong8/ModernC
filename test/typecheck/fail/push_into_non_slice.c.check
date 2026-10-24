@@ -1,9 +1,9 @@
-// EXPECT: not a structure
+// EXPECT: not a structure|member reference|invalid type argument|layout-compatible
 // Push needs a pointer to something descriptor-shaped. The check is
 // structural: any struct/union with data/len/cap passes, a bare pointer does
 // not.
 #include "arena.h"
 
 void use(Arena* arena, int* raw) {
-  Push(arena, raw, 1);
+  *PushGrow(arena, raw) = 1;
 }

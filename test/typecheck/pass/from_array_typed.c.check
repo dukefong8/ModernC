@@ -52,7 +52,7 @@ int use(Arena* arena) {
   ints* lit = New(arena, ints);
   SliceFromArray(arena, lit, ((int[]){4, 5, 6}));
 
-  Push(arena, s, 40);
+  *PushGrow(arena, s) = 40;
 
   return s->data[0] + b->data[0] + cs->data[0] + cm->data[0] + ps->data[0].x +
          (int)w->data[0].v[0] + os->data[0] + lit->data[0] + (int)ws->len +

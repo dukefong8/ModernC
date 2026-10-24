@@ -47,7 +47,7 @@ operation:
 typedef Slice(int) ints;
 
 ints* s = New(arena, ints);
-Push(arena, s, 42);
+*PushGrow(arena, s) = 42;
 int v = s->data[0];
 ```
 
@@ -57,7 +57,7 @@ store and pass it by value and take its address at the operation:
 ```c
 fints b = {0};
 SliceFixed(arena, &b, 16);
-Push(&b, 42);
+*Push(&b) = 42;
 ```
 
 Name the type with a typedef: each `Slice(T)` expansion is a distinct
@@ -77,21 +77,30 @@ offsets, and alignment match `SliceInternal`.
 - `SliceFromArray(arena, dst, a)` — copy into
   arena storage (`cap == len`); source lifetime no longer matters.
 - `SliceFixed(arena, &b, cap)` — initialize the fixed class.
-- `Push(s, v)` — structural checked no-growth append; works for either class,
-  never allocates or relocates, returns the new index or -1 when full
-  (nodiscard). Pass a fixed value as `&b`.
-- `Push(arena, s, v)` — the only growing form, movable class only; may
-  relocate. `Reserve(arena, s, n)` may relocate too.
+- `Push(&b)` — fixed-capacity append; `FixedSlice` only, never allocates or
+  relocates, and returns an uninitialized slot or `NULL` when full (caller must
+  write `*slot`). A movable `Slice` must use `Push(arena, s)` or `PushGrow`.
+- `Push(arena, s)` — movable class only; when full, extends capacity in place
+  if the backing ends at the arena tip (nothing moves; an empty slice always
+  qualifies) and returns `NULL` off-tip (uninitialized slot on success).
+  `PushGrow(arena, s)` always grows and may relocate (uninitialized slot).
+  `Reserve(arena, s, n)` may relocate too.
 - `At(s, i)` — bounds-checked element access, an lvalue valid across moves.
 - `Clone(arena, out, src[, start[, len]])` — destination-only copy;
   works on either slice class.
-- `PushUnchecked(s, v)` — unchecked in-capacity write.
 - `Pop(s, &out)` — last element into `*out`, false when empty (nodiscard).
-- `SliceAtTip(arena, s)` — momentary query: true when the non-empty backing
-  block ends at the arena tip, so an immediate grow/reserve extends in place.
+- `SliceAtTip(arena, s)` — momentary query: true when immediate growth would
+  not move existing elements. An empty slice (no backing block) reports
+  true — growth allocates fresh at the tip. A non-empty backing block
+  reports true only while it ends at the arena tip, so an immediate
+  grow/reserve extends in place.
   Any later allocation changes the tip; this is not a lifetime or no-move
-  guarantee. For stable references, reserve capacity first, then use a
-  non-growing append.
+  guarantee. For stable references, reserve capacity first, then use
+
+
+Write elements through the returned slot: `*PushGrow(arena, s) = v;`.
+A slot is an element pointer, so it dies at the next growing call on that
+slice; indices and `At(s, i)` stay valid across moves.
 
 ### Storage and passing rubric
 
@@ -127,10 +136,10 @@ Pros and cons:
   Tested by `fixed_by_value_aliasing_and_mutation`,
   `fixed_by_value_lifetime`, and `fixed_never_relocates_movable_does`.
 
-`Push`/`Reserve` dispatch on `_kind` with an inlined
+`PushGrow`/`Reserve` dispatch on `_kind` with an inlined
 `_Static_assert(_Generic(_s->_kind, MovableKind: 1, default: 0), "expected a movable Slice")`:
 `MovableKind` → movable, and `FixedKind` or an unknown tag fails the assertion.
-`PushUnchecked`, `Pop`, and `Clone` remain structural.
+`Pop` and `Clone` remain structural; `Push` dispatches on the class tag.
 
 Implementation split: the macros above exist where C needs a type name
 (`sizeof(T)`, `__builtin_types_compatible_p`), a `_kind` `_Generic`
@@ -139,9 +148,9 @@ growth itself is type-erased (`arena_slice_reserve`, `arena_slice_grow`,
 `_arena_at_tip`, exposed as `SliceAtTip(arena, s)`); slot computation, typed
 stores, and descriptor updates stay inline in the macros. Statement macros use
 `do { } while (0)`; value-returning
-macros (`Push`, `PushUnchecked`, `Pop`, 3-arg `SliceFromArray`) use a
-statement expression, and `ArenaOOM` must keep `setjmp` in the caller's frame
-as a controlling expression.
+macros (`Push`, `PushGrow`, `Pop`, 3-arg
+`SliceFromArray`) use a statement expression, and `ArenaOOM` must keep `setjmp`
+in the caller's frame as a controlling expression.
 
 Evaluation: each operation macro binds its slice, value, and capacity
 arguments once (`slice`/`value`/`min_cap` are evaluated once; the checks are
@@ -159,8 +168,8 @@ references, slices), §4 (values/copy/assignment), §5 (resize/shrink rules), §
 
 | C class | API | Nearest Goose type | Assessment |
 |---|---|---|---|
-| 1. Fixed | `FixedSlice`, `SliceFixed(arena, &b, cap)`, `Push(&b, v)`, `Pop(&b, &out)` | `T[..]` / `T[..k]` | Fixed-capacity, no-growth store; metadata is `isize`, no `pop_n`/`resize`/`clear`. Capacity is a size limit, not the class marker. |
-| 2. Movable | `SliceFromArray(arena, dst, array)`, `Clone`, ordinary `Slice` + 3-arg `Push`/`Reserve` | **No Goose equivalent** | Growth may relocate; aliases can dangle after `Push`/`Reserve`. Class 2 is a C arena-vector extension. |
+| 1. Fixed | `FixedSlice`, `SliceFixed(arena, &b, cap)`, `Push(&b)`, `Pop(&b, &out)` | `T[..]` / `T[..k]` | Fixed-capacity, no-growth store; metadata is `isize`, no `pop_n`/`resize`/`clear`. Capacity is a size limit, not the class marker. |
+| 2. Movable | `SliceFromArray(arena, dst, array)`, `Clone`, ordinary `Slice` + `Push(arena, s)`/`PushGrow`/`Reserve` | **No Goose equivalent** | Growth may relocate; aliases can dangle after `PushGrow`/`Reserve`. Class 2 is a C arena-vector extension. |
 
 The class boundary is the type and growth policy, not a bound check:
 `FixedSlice` cannot grow at all, and ordinary `Slice` is movable.
@@ -178,11 +187,10 @@ type. "Layout" = size/offsets/alignment vs `SliceInternal`.
 | Operation | Compile-time | Runtime (always) | Debug only | Gap vs `T[..]` / `T[..k]` |
 |---|---|---|---|---|
 | `SliceFixed(arena, &b, cap)` | layout + tag; element size/alignment/stride | `cap >= 0`; reserve | slice-state check | capacity is runtime, not compile-time `k` |
-| `Push(&b, v)` | value type (hard error); layout (structural, no tag needed) | full → `-1`, no append; never relocates | slice-state check | no `append`, `index_of`; single-element push only; result is nodiscard |
-| `Pop(&b, &out)` | output type; layout (structural, no tag needed) | empty → `false`, `*out` untouched | slice-state check | no `pop_n`/`resize`/`clear`; no shrink-liveness proof |
-| `PushUnchecked(&b, v)` | value type; layout | — | spare-capacity `len < cap` | release overrun corrupts silently |
+| `Push(&b)` | layout (structural, no tag needed) | full → `NULL`, no append; never relocates | slice-state check | no `append`, `index_of`; single-element push only |
+| `Pop(&b, &out)` | layout (structural, no tag needed) | empty → `false`, `*out` untouched | slice-state check | no `pop_n`/`resize`/`clear`; no shrink-liveness proof |
 
-| `Push(arena, &b, v)` / `Reserve(arena, &b, n)` | **compile error** — inlined `_Static_assert` requires `MovableKind` | n/a | n/a | n/a (this *is* the enforcement) |
+| `Push(arena, &b)` / `PushGrow(arena, &b)` / `Reserve(arena, &b, n)` | **compile error** — inlined `_Static_assert` requires `MovableKind` | n/a | n/a | n/a (this *is* the enforcement) |
 
 #### Class 2 — Movable (`Slice`, tag `MovableKind`)
 
@@ -192,16 +200,15 @@ stale, while indices and `At(s, i)` stay valid. **No Goose equivalent** — Goos
 | Operation | Compile-time | Runtime (always) | Debug only | Gaps |
 |---|---|---|---|---|
 | `SliceFromArray(arena, dst, a)` | real, non-empty, constant-extent array; length/size fit `isize`; alignment/stride; dst must be movable `Slice` (inlined `_Static_assert` requires `MovableKind`); dst element type match | arena OOM policy; `cap == len` | — | source lifetime solved by copying, but arena lifetime remains; not an inline `T[k]` value |
-| `Push(s, v)` | value type; layout (structural, no tag needed) | full → `-1`, no append; never allocates or relocates | slice-state check | no growth by design; use 3-arg `Push` to grow |
-| `Push(arena, s, v)` | value type; layout; `MovableKind` required | full slice-state check on the grow path; OOM policy | slice-state check | stale aliases undetected (old block not freed, ASAN often blind) |
+| `Push(arena, s)` | layout; `MovableKind` required | empty or full at tip → extends in place; full off-tip → `NULL`, no move | slice-state check | at-tip growth only; `PushGrow` relocates |
+| `PushGrow(arena, s)` | layout; `MovableKind` required | full slice-state check on the grow path; OOM policy | slice-state check | stale slots undetected (old block not freed, ASAN often blind) |
 | `Reserve(arena, s, n)` | layout + tag via dispatch | state check + arg validation, even in release; may relocate | — (checked in release too) | same relocation hazard on capacity change alone |
-| `Pop(s, &out)` | output type; layout (structural) | empty → `false` | slice-state check | popped-slot reuse undetected |
-| `PushUnchecked(s, v)` | value type; layout | — | state + spare capacity | release overrun undetected |
+| `Pop(s, &out)` | layout (structural) | empty → `false` | slice-state check | popped-slot reuse undetected |
 | `Clone(arena, out, src[, start[, len]])` | layout; out-vs-src element type | source/range bounds; args evaluated once | — | shallow; no relocatable trait |
 
 #### Dispatch across classes
 
-| Input to 3-arg `Push`/`Reserve` | Result |
+| Input to `Push(arena, ...)`/`PushGrow`/`Reserve` | Result |
 |---|---|
 | `MovableKind` | movable path |
 | `FixedKind` | **compile error** (`expected a movable Slice`) |
@@ -251,8 +258,8 @@ map as follows:
   represented.
 - Divergence: Goose `[..]` and `[>..]` are distinct static types. Here only
   `FixedSlice` (fixed, no arena growth) remains; the growable side is the
-  movable `Slice`, and the three-argument `Push`/`Reserve` on a fixed
-  descriptor is a compile error.
+  movable `Slice`, and `PushGrow`/`Reserve` on a fixed descriptor is a
+  compile error.
 - Divergence: metadata is `isize`; Goose supports `u32` default and
   `u8`–`u64`/`varint` length fields.
 - Missing: variable-size elements, sequential arrays, `pop_n`,
@@ -280,8 +287,8 @@ map as follows:
 - `Clone(arena, out, src)` writes through a destination pointer. A descriptor
   can be returned by value, but the result aliases the same backing block;
   prefer pointers.
-- A whole `=` assignment is not a deep copy; `Push`, `Pop`, and `Clone`
-  are the mutation paths.
+- A whole `=` assignment is not a deep copy; `Push`/`PushGrow`, `Pop`,
+  and `Clone` are the mutation paths.
 
 ### §5.1 — grow-only `[>..]`
 
@@ -304,8 +311,8 @@ map as follows:
 
 - §9.1/§9.2: **not implemented**. No roots, store rule, branch/return root
   checks, temporary lifetime enforcement, or escape checks.
-- §9.3: runtime aborts exist for arena misuse and empty fixed push; reasonable
-  C safety net. Fixed `Push` reports `-1` instead of aborting.
+- §9.3: runtime aborts exist for arena misuse and empty fixed push;
+  reasonable C safety net. Fixed `Push` reports `NULL` instead of aborting.
 - §9.4: no type-safe reuse model; ASan poisoning is not Goose type safety.
 - §9.5: partial C `const` handling (`const` array → mutable slice rejected;
   adding `const` allowed); no deep writability provenance.
@@ -324,13 +331,13 @@ map as follows:
 Harness: `make typecheck` / `test/typecheck.sh`. Pass fixtures must compile
 with `-Werror`; fail fixtures must fail for the expected reason.
 
-Current result: **14 compiled, 26 rejected**.
+Current result: **14 compiled, 24 rejected**.
 
-### Pass fixtures (14)
+### Pass fixtures (15)
 
 - `slice_classes_legal` — both classes and legal conversion paths.
 - `fixed_slice` — fixed layout, `SliceFixed`, fixed `Push`,
-  `PushUnchecked`, `Clone`.
+  `Clone`.
 - `const_fixed_copy` — const-element fixed → const-element Slice via `Clone`.
 - `from_array_typed`, `from_array_copy`, `from_array_alignment` — real/const/
   compound-literal/over-aligned arrays copied by `SliceFromArray`.
@@ -338,40 +345,42 @@ Current result: **14 compiled, 26 rejected**.
   typed `s->data[i]` access, layout identity, multi-expansion coexistence.
 - `struct_fields` — a `New`-allocated record holding movable slices inline
   and by pointer, plus a fixed descriptor stored by value.
-- `push_typed`, `push_unchecked_typed`, `pop_typed` — value/output type checks.
-- `push_no_grow` — 2-argument `Push` on movable and fixed descriptors; it
-  compiles for both and reports -1 when full.
+- `push_typed`, `pop_typed` — typed slots and the Pop assignment path.
+- `push_no_grow` — `Push(&b)` on fixed and `Push(arena, s)` on movable; both
+  compile and return NULL when full.
+- `push_at_tip` — `Push(arena, s)` extends an at-tip full slice in place.
 
-### Fail fixtures, grouped (26)
+### Fail fixtures, grouped (24)
 
 - `SliceFromArray` misuse (9): pointer, pointer-to-array, VLA, zero-length,
   element type mismatch, const mismatch, typed-destination mismatch,
   fixed-destination value, and a const array copied through the typed
   destination.
-- Value-type misuse (7): wrong scalar, wrong struct, unchecked wrong scalar,
-  push into non-slice, fixed Push wrong scalar, const
-  fixed Push, const movable Push.
+- Value/const misuse (3): push into a non-slice, const fixed push, const
+  movable push.
 - By-value descriptor (1): passing `Slice(T)` itself instead of `Slice(T)*`.
-- Pop misuse (2): wrong output type, const output destination.
+- Pop misuse (1): const output destination.
 - Slice `data` pointer type (1).
-- Class/handle misuse (6): fixed→Slice and Slice→fixed assignment,
-  growable `Push` on a fixed value, `Reserve` on a fixed value, unknown tag on
-  3-arg `Push`, and unknown tag on `Reserve`.
+- Class/handle misuse (8): fixed→Slice and Slice→fixed assignment,
+  `Push(arena, &b)` and `PushGrow` on a fixed value, `Reserve` on a fixed
+  value, `Push(s)` on a movable slice (missing arena), and unknown tags on
+  `PushGrow` and `Reserve`.
+- Old value-taking `Push` (1): a three-argument call is a hard error.
 
-Element-type guards for `Push`/`PushUnchecked` are hard `_Static_assert`
-checks: they compare the value type with the slice element type through
-`__builtin_types_compatible_p`, so a wrong scalar or struct is an error even
-without `-Werror`. Top-level qualifiers are ignored by that builtin; pushing
-an `int` into a `const int` slice consequently passes the type assert but is
-still rejected by the typed store (`*_p = _v`) that follows. The same applies
-to the typed `SliceFromArray` form. Layout/array checks are likewise
-`_Static_assert` errors.
+The value-argument type guards are gone with `Push`: `Push` returns a typed
+`T*`, so a wrong-type store is an ordinary C assignment diagnostic (for
+example `-Wliteral-conversion` or `-Wincompatible-pointer-types`), not a hard
+`_Static_assert` — `-Werror` (as in `test/typecheck.sh`) is required to turn it
+into a failure. `Pop` output has the same property: `Pop(s, &out)` type-checks
+only via the `*_o = ...` assignment. Class, layout, and array checks remain
+hard errors. The typed `SliceFromArray` form still rejects a mismatched
+destination element type at compile time.
 
 ---
 
 ## 4. Runtime coverage
 
-Current result: **142 tests passed**, 0 build warnings.
+Current result: **150 tests passed**, 0 build warnings.
 
 Slice tests live in `src/slice_tests.c` (`slice.*`), with `cspan` fixtures
 using arena-owned descriptors, plus 3 in `main.c`; the rest cover `astr`,
@@ -387,21 +396,21 @@ ADTs/demo.
 
 ### Empty edge cases
 
-- `New`-zeroed descriptor, empty `Clone`, first `Push` allocates.
+- `New`-zeroed descriptor, empty `Clone`, first `PushGrow` allocates.
 - Empty fixed at the tip and off-tip: allocate at `cur`, stay aligned.
 
 ### Core slice behavior
 
 - Clone: full/subrange/empty/argument evaluation (including once-only
   evaluation of arena, destination, source, and start).
-- Entry-point argument evaluation: `Push`, `Reserve`, `Pop`, `SliceFixed`, and
-  typed `SliceFromArray` evaluate each runtime argument exactly once.
-- Push: 2-arg no-growth reaches full → -1 and preserves data pointers even off-tip;
-  3-arg growth relocates when needed; structs and fill survival.
-- PushUnchecked: reserved fill, shared state, partial top-up.
-- Pop: last element, cap preservation, slot reuse, struct values, Push/Pop
-  round-trips, Pop-then-Push no-op (incl. after relocation), empty-safe false
-  with `*out` untouched.
+- Entry-point argument evaluation: `PushGrow`, `Reserve`, `Pop`,
+  `SliceFixed`, and typed `SliceFromArray` evaluate each runtime argument
+  exactly once.
+- Push: no-growth reaches full → NULL and preserves data pointers even
+  off-tip; PushGrow relocates when needed; structs and fill survival.
+- Pop: last element, cap preservation, slot reuse, struct values,
+  PushGrow/Pop round-trips, Pop-then-Push no-op (incl. after relocation),
+  empty-safe false with `*out` untouched.
 - Reserve: grow, preserve, grow-only, at-tip extension.
 - Layout/type: multi-token, duplicate expansions, typed access, zero overhead.
 - Arena ownership: `New`-zeroed descriptor, descriptor passed between
@@ -414,7 +423,7 @@ ADTs/demo.
   survive unrelated allocations/reset as values, while their arena data does
   not; movable descriptors and data survive nested `Scratch`; fixed data
   never relocates, movable off-tip growth does.
-- `SliceAtTip`: empty slices report false; movable/fixed blocks report true
+- `SliceAtTip`: empty slices (no backing) report true; movable/fixed blocks report true
   at the tip; off-tip reserve relocates and returns to the tip, at-tip reserve
   extends in place.
 - Overlap/scratch: shared backing, nested `Scratch` survival.
@@ -430,8 +439,8 @@ ADTs/demo.
 
 ### Stale-reference enforcement matrix
 
-A reference here means a raw `T*` into a slice's backing block, a `Push`
-return, a subslice descriptor, or another descriptor copy that shares the
+A reference here means a raw `T*` into a slice's backing block, an
+`Push`/`PushGrow` slot, a subslice descriptor, or another descriptor copy that shares the
 same storage. The library has no ownership, borrow, or liveness tracking.
 Unless the Enforcement column names a compile-time check or `Assert`, a stale
 reference can be created and used without a diagnostic.
@@ -439,16 +448,15 @@ reference can be created and used without a diagnostic.
 | Operation | What can become stale | Enforcement |
 |---|---|---|
 | `SliceFromArray(arena, dst, a)` | The source array lifetime is no longer a hazard because the elements are copied. The new backing is arena storage, so arena reset/Scratch still invalidates it. | Compile-time array/type checks. Not enforced: arena lifetime. |
-| `Push(arena, s, v)` on a movable `Slice` | Off-tip growth may `memmove` the elements. Every prior `T*` and subslice descriptor into the old block is stale; indices and `At(s, i)` stay valid. At-tip growth extends in place. | Compile-time value-type check; debug-only slice-state check. Not enforced: stale aliases. The old bump block is not freed, so ASAN often still sees it as live. |
+| `PushGrow(arena, s)` on a movable `Slice` | Off-tip growth may `memmove` the elements. Every prior `T*`, slot, and subslice descriptor into the old block is stale; indices and `At(s, i)` stay valid. At-tip growth extends in place. | Compile-time layout/class check; debug-only slice-state check. Not enforced: stale slots and aliases. The old bump block is not freed, so ASAN often still sees it as live. |
 | `Reserve(arena, s, n)` on a movable `Slice` | Same relocation hazard, even when only capacity changes. | Layout and state checks. Not enforced: stale aliases. |
-| `Push(s, v)` (2-arg) | No move, so element pointers stay valid for either class. | Structural descriptor/type check (no `_kind` check); full → `-1`, no append, nodiscard. Not enforced: arena lifetime. |
-| `Push(arena, &b, v)` / `Reserve(arena, &b, n)` | Fixed class: no growth path exists. Inlined `_Static_assert` requires `MovableKind`. | Compile error (`expected a movable Slice`). |
-| `PushUnchecked(s, v)` | Does not move, but release builds have no capacity check; an overrun can corrupt neighboring elements and other slices or aliases. | Debug-only spare-capacity `Assert`. Not enforced in release: bounds, overlap, or corruption. |
+| `Push(arena, s)` with spare capacity / `Push(&b)` | No move, so element pointers stay valid. | Descriptor and class-tag check; full → `NULL`; off-tip `Push(arena, s)` does not grow. Not enforced: arena lifetime. |
+| `PushGrow(arena, &b)` / `Reserve(arena, &b, n)` | Fixed class: no growth path exists. Inlined `_Static_assert` requires `MovableKind`. | Compile error (`expected a movable Slice`). |
 | `Pop(s, &out)` / `Pop(&b, &out)` | No move; references to remaining elements stay valid. A reference to the popped slot is logically stale: the memory is not cleared, and the next `Push` may overwrite it. | Empty returns false without touching `out`. Not enforced: use of a pointer to the popped slot. |
 | `SliceFixed(arena, &b, n)` on an already-initialized fixed value | Overwrites `b` and orphans its previous backing; old pointers and subslices into that backing become stale. | Capacity/alignment and element-stride checks. Not enforced: old data aliases. |
 | `Clone(arena, out, s)` | The source is not moved, but the clone is shallow: element-held pointers, slices, or self-relative references still refer to the source storage/lifetime. It also overwrites `out`, orphaning its previous backing. | Bounds/layout checks. Not enforced: relocatable/self-relative element types or arena lifetime. |
 | Explicit descriptor copies (`*dst = *src`, `memcpy`, struct copy) | Movable: a value copy pins the old block; a later growth through the original leaves the copy stale. Fixed: copies are valid views because the backing never relocates, but `len`/`cap` diverge. | None: descriptors are ordinary values, so copies compile and alias silently. Pass movable slices by pointer; fixed values may be copied. |
-| Hand-written descriptor with `data` over caller memory | No view constructor exists, but a structural `{data, len, cap}` literal still compiles for the structural ops (`Pop`/`PushUnchecked`/`Clone`). 2-arg `Push` is structural and accepts any layout-matching descriptor. | Layout/type checks only. Not enforced: external-memory ownership, lifetime, or a later `Reserve` move. |
+| Hand-written descriptor with `data` over caller memory | No view constructor exists, but a structural `{data, len, cap}` literal still compiles for the structural ops (`Pop`/`Clone`). `Push(&b)` and `Push(arena, s)` require a known class tag. | Layout/type checks only. Not enforced: external-memory ownership, lifetime, or a later `Reserve` move. |
 | `Scratch` exit / `arena_reset` / `arena_release` / `arena_free` | All slice storage in the affected arena range becomes stale; bump memory may be reused by later allocations. | No slice-level check. ASAN may catch some freed memory, but not ordinary bump reuse. |
 | `Pop` followed by `Push` | The popped slot can be reused; an old pointer to it observes the new value or a later overwrite. | None; this is a logical lifetime rule. |
 
@@ -457,15 +465,15 @@ source pointers (off-tip growth relocates instead of asserting).
 
 What is actually enforced elsewhere:
 
-- compile time: operation form/class, `Push` value type, `Pop` output type,
-  slice/array layout, and `SliceFromArray` array validity;
-- runtime: fixed capacity (`-1`, nodiscard), movable
-  relocation, empty-safe `Pop`, and debug slice-state/spare-capacity checks.
+- compile time: operation form/class, slice/array layout,
+  and `SliceFromArray` array validity;
+- runtime: full → `NULL`, movable
+  relocation, empty-safe `Pop`, and debug slice-state checks.
 
 None of these checks proves that a data pointer is still live. There is no
 descriptor-identity guard: plain descriptor copies alias silently.
 Store indices or offsets across growth, reacquire `data` after a movable
-`Push`/`Reserve`, do not keep pointers to popped slots, and treat
+`PushGrow`/`Reserve`, do not keep pointers to popped slots, and treat
 `Scratch`/reset as freeing every slice in its range. ASAN/UBSAN are diagnostic
 aids, not part of the API; sanitizer coverage for stack lifetime depends on the
 flags, and old bump blocks are not freed.
@@ -481,7 +489,7 @@ These are the areas a reviewer should not assume are covered.
 
 2. **Movable is C-only.**
    Ordinary Slice growth can move. Goose has no movable resizable array;
-   references/pointers into movable slices can dangle after `Push`/`Reserve`.
+   references/pointers into movable slices can dangle after `PushGrow`/`Reserve`.
    Indices and `At(s, i)` stay valid across moves.
 
 3. **Partial shrink API.**
@@ -507,14 +515,12 @@ These are the areas a reviewer should not assume are covered.
 6. **`_kind` is internal.**
    It overlays `data`, is never read at runtime, and exists only for
    `_Generic` dispatch. Do not read/write it. Hand-written descriptors that
-   want the three-argument `Push`/`Reserve` must add a matching tag.
+   want `PushGrow`/`Reserve` must add a matching tag.
 
-7. **Two-argument `Push` is the no-growth form for both classes.**
-   `Push(s, v)` is structural: it accepts a movable `Slice`, a `FixedSlice`
-   value, or any layout-matching descriptor, never allocates or relocates, and
-   returns -1 when full. The
-   3-argument form is the only growth path and requires `MovableKind`.
-   `PushUnchecked` remains the unchecked fast path.
+7. **`Push` is class-split: fixed by value, movable with an arena.**
+   `Push(&b)` requires `FixedKind`; `Push(arena, s)` requires `MovableKind` and
+   grows only at the tip. `PushGrow(arena, s)` is the relocating growth path.
+
 
 9. **Metadata and limits.**
    `isize` is not Goose’s `u32`/`u8`–`u64`/`varint` metadata model. The Goose
@@ -537,28 +543,28 @@ is present in release too (`Assert`); "debug" means `NDEBUG` removes it.
 | Check | Mechanism | Applies to |
 |---|---|---|
 | `Slice(T)` size, `data`/`len`/`cap` offsets, and alignment match `SliceInternal` | `_Static_assert` in `_SliceAssertStatic` | every typed Slice operation |
-| `FixedSlice` descriptor footprint and alignment | `_SliceAssertStatic` inlined at each fixed entry point | `Push(&b, v)`, `SliceFixed` |
+| `FixedSlice` descriptor footprint and alignment | `_SliceAssertStatic` inlined at each fixed entry point | `Push(&b)`, `SliceFixed` |
 | Array is a real, non-empty, constant-extent C array; element size nonzero; length/size fit `isize`; power-of-two alignment; stride multiple | `_Static_assert` in `_SliceAssertArray` | `SliceFromArray` |
-| Value type matches the slice element type | `__builtin_types_compatible_p` in `_SliceAssertValueType` | all `Push` forms, `PushUnchecked`, `Pop` output |
-| Element destination is writable / pointer assignment is compatible | typed store/assignment in the macro body (`_s->data[_idx] = _v`, `*_o = ...`) | `Push`, `PushUnchecked`, `Pop`, typed `SliceFromArray` |
+| Slot return type matches the element type | `__typeof__(*data) *` in `Push`/`PushGrow` | all push forms; the store itself is an ordinary C assignment |
+| Element destination is writable / assignment is compatible | `memset` on the returned slot and the typed store in `Pop` (`*_o = ...`) | `Push`, `PushGrow`, `Pop`, typed `SliceFromArray` |
 | Destination element type matches the copied array | `__builtin_types_compatible_p` in `SliceFromArray` | `SliceFromArray(arena, dst, array)` |
 | Destination is a movable `Slice` | inlined `_Static_assert(_Generic(...))` in `SliceFromArray` | `SliceFromArray(arena, dst, array)` |
 | Clone destination element type matches source | `__builtin_types_compatible_p` in `_CloneDst`/`_CloneToEnd` | `Clone` |
 | Element size, alignment, and stride valid | `_Static_assert` in `SliceFixed` | fixed value initialization |
-| Class dispatch: `MovableKind` required | inlined `_Static_assert(_Generic(...))` | wrong-class descriptors (incl. unknown hand-written tags) are compile errors on 3-arg `Push`/`Reserve` and `SliceFromArray` |
-| Operation argument is a pointer to the descriptor | member access through the macro body (`_s->data`, `_s->_kind`) | `Push`, `Pop`, `Reserve`, `At`, `Clone`; passing the descriptor itself by value is rejected |
-| Two-argument `Push` is structural and never grows | `_SliceAssertStatic` + `_SliceAssertValueType` | any layout-matching descriptor; no `_kind` requirement, no growth path |
-| Three-argument `Push` requires a movable `Slice` | inlined `_Static_assert(_Generic(...))` | `FixedSlice` is a compile error |
+| Class dispatch: `MovableKind` required | inlined `_Static_assert(_Generic(...))` | wrong-class descriptors (incl. unknown hand-written tags) are compile errors on `Push(arena, s)`/`PushGrow`/`Reserve` and `SliceFromArray` |
+| Operation argument is a pointer to the descriptor | member access through the macro body (`_s->data`, `_s->_kind`) | `Push`, `PushGrow`, `Pop`, `Reserve`, `At`, `Clone`; passing the descriptor itself by value is rejected |
+| `Push(&b)` requires `FixedKind` | inlined `_Static_assert(_Generic(...))` | a movable `Slice` is a compile error |
+| `Push(arena, s)`/`PushGrow` require a movable `Slice` | inlined `_Static_assert(_Generic(...))` | `FixedSlice` is a compile error |
 
 ### Runtime checks
 
 | Check | Always or debug | Location |
 |---|---|---|
 | Slice state: `len >= 0`, `len <= cap`, `data` present unless empty, data aligned | always | `arena_slice_reserve` (all growth paths end there) |
-| Slice state for the other operations | debug only | `_SliceAssertRuntimeDebug` in 3-arg `Push`, `PushUnchecked`, `Pop`, `Reserve` |
-| Capacity `len < cap`, full → `-1`, no append | always | two-argument `Push(s, v)` for either class (nodiscard) |
+| Slice state for the other operations | debug only | `_SliceAssertRuntimeDebug` in `Push`, `PushGrow`, `Pop`, `Reserve` |
+| Capacity `len < cap`, full → `NULL`, no append | always | `Push(&b)` (fixed); `Push(arena, s)` (movable, at tip) |
+| At-tip extension: only when `data + size*cap == arena->cur` | always | `_arena_at_tip` guard in `arena_slice_grow_at_tip`; no move |
 | Reserve arguments (`min_cap >= 0`, element size positive, alignment power-of-two) and valid slice state | always | `arena_slice_reserve` (called by every `Reserve` path) |
-| `PushUnchecked` spare capacity | debug only | `_SliceAssertSpareDebug` |
 | `Clone` source and range (`data` non-null unless empty, `start`/`len` bounds) | always | `_CloneDst` |
 | Fixed capacity non-negative | always | `SliceFixed` |
 
@@ -567,7 +573,7 @@ is present in release too (`Assert`); "debug" means `NDEBUG` removes it.
 These stay in the stale-reference matrix above, because no compile-time or
 runtime check proves them:
 
-- liveness of a `data`/element pointer after a movable `Push`/`Reserve`;
+- liveness of a `data`/element pointer after a movable `PushGrow`/`Reserve`;
 - arena lifetime after `Scratch`, `arena_reset`, `arena_release`, or `arena_free`;
 - reuse of a popped slot;
 - explicit descriptor copies (`*dst = *src`, `memcpy`, struct copy);
@@ -612,10 +618,10 @@ CC='clang -std=c23' ./test/typecheck.sh
 Last recorded results:
 
 ```text
-runtime suite:                  142 tests passed
-make typecheck:                 14 compiled, 26 rejected
-CC=clang -std=c23 typecheck:    14 compiled, 26 rejected
-CC=cosmocc -mcosmo typecheck:   14 compiled, 26 rejected
+runtime suite:                  150 tests passed
+make typecheck:                 14 compiled, 24 rejected
+CC=clang -std=c23 typecheck:    14 compiled, 24 rejected
+CC=cosmocc -mcosmo typecheck:   14 compiled, 24 rejected
 build warnings:                 0
 ```
 

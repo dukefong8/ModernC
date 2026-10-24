@@ -60,7 +60,7 @@ UTEST(cspan, slice2) {
 
   cspan_ints* values = New(arena, cspan_ints);
   for (int i = 0; i < 10 * 20 * 30; i++) {
-    Push(arena, values, i);
+    *PushGrow(arena, values) = i;
   }
 
   Span3 ms3 = cspan_md(values->data, 10, 20, 30);
@@ -135,7 +135,7 @@ UTEST_F_SETUP(cspan_cube) {
   utest_fixture->values = New(&utest_fixture->arena, cspan_ints);
   Reserve(&utest_fixture->arena, utest_fixture->values, N);
   for (int i = 0; i < N; i++) {
-    PushUnchecked(utest_fixture->values, i + 1);
+    *Push(&utest_fixture->arena, utest_fixture->values) = i + 1;
   }
 
   Span3 ms3 = cspan_md(utest_fixture->values->data, CUBE, CUBE, CUBE);
@@ -146,7 +146,7 @@ UTEST_F_SETUP(cspan_cube) {
     for (int j = 0; j < CUBE; j += TSIZE) {
       for (int k = 0; k < CUBE; k += TSIZE) {
         Span3 tile = cspan_slice(&ms3, Span3, {i, i + TSIZE}, {j, j + TSIZE}, {k, k + TSIZE});
-        PushUnchecked(utest_fixture->tiles, tile);
+        *Push(&utest_fixture->arena, utest_fixture->tiles) = tile;
       }
     }
   }

@@ -1,4 +1,4 @@
-// EXPECT: read-only|assignment of read-only
+// EXPECT: discards qualifiers|read-only
 // The fixed payload element type is const int, so Push cannot write it.
 #include "arena.h"
 
@@ -7,5 +7,5 @@ typedef FixedSlice(const int) cfints;
 void use(Arena* arena) {
   cfints b = {0};
   SliceFixed(arena, &b, 4);
-  Push(&b, 1);
+  *Push(&b) = 1;
 }

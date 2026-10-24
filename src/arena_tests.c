@@ -180,10 +180,10 @@ UTEST(arena, scratch_outer_alias_clone) {
   {
     Scratch(arena);  // `arena` is a temporary copy here
     ints* tmp = New(arena, ints);
-    Push(arena, tmp, (int)42);
+    *PushGrow(arena, tmp) = (int)42;
 
     ints* extra = New(arena, ints);  // more scratch work before the outer write
-    Push(arena, extra, (int)7);
+    *PushGrow(arena, extra) = (int)7;
     ASSERT_EQ(extra->data[0], 7);
 
     Clone(out, kept, tmp);  // last use of `out` in the block
@@ -208,7 +208,7 @@ UTEST(arena, scratch_overlapping_clone) {
     Scratch(arena);
     ints* tmp = New(arena, ints);
     for (int i = 0; i < 64; i++)
-      Push(arena, tmp, (int)i);
+      *PushGrow(arena, tmp) = (int)i;
 
     int* src = tmp->data;
     Clone(out, big, tmp);
@@ -236,13 +236,13 @@ UTEST(arena, scratch_outer_past_scratch_advance) {
   {
     Scratch(arena);
     ints* tmp = New(arena, ints);
-    Push(arena, tmp, (int)1);
+    *PushGrow(arena, tmp) = (int)1;
     Clone(out, kept, tmp);          // outer cursor: base + 4
     int* wide = New(out, int, 64);  // outer cursor: base + 260
     for (int i = 0; i < 64; i++)
       wide[i] = 0xAB;
     ints* next = New(arena, ints);  // scratch cursor: base + 28, inside `wide`
-    Push(arena, next, (int)9);
+    *PushGrow(arena, next) = (int)9;
     for (int i = 0; i < 64; i++)
       changed += wide[i] != 0xAB;
   }
@@ -261,7 +261,7 @@ UTEST(arena, scratch_source_consumed_by_outer_write) {
   {
     Scratch(arena);
     ints* tmp = New(arena, ints);
-    Push(arena, tmp, (int)5);
+    *PushGrow(arena, tmp) = (int)5;
 
     unsigned char before[sizeof(ints)];
     memcpy(before, tmp, sizeof before);

@@ -1,0 +1,10 @@
+// EXPECT: requires a FixedSlice value
+// Push(&b) is the fixed-capacity form; a movable Slice must name its arena,
+// via Push(arena, s) or PushGrow.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+void use(ints* s) {
+  Push(s);
+}

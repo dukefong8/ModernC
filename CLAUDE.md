@@ -56,20 +56,22 @@ OOM policy is per-call and three-way: default is `longjmp` to the `jmp_buf` regi
 
 The API surface built on top: `New(arena, T[, n][, NO_INIT | OOM_NULL | src_ptr])` (`_Generic`
 selects copy-init when the 4th arg is a pointer), `Scratch(arena)` for scope-restored temporaries,
-`Slice(T)` + `Push`/`PushUnchecked`/`Reserve`/`Clone`/`SliceAtTip`, and the `astr` length-prefixed string
+`Slice(T)` + `Push`/`PushGrow`/`Reserve`/`Clone`/`SliceAtTip`, and the `astr` length-prefixed string
 family (`S(s)` for printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
 
-`Push(arena, s, v)` is the only growing form: it stores the value it is given, so call sites
-spell the element type explicitly (`(int64_t)10`, not `10`) — a mismatch is a compiler diagnostic
-(`-Wpointer-type-mismatch`), not a conversion. It requires a movable `Slice` and may relocate.
-The 2-argument `Push(s, v)` is the structural checked no-growth form: it never allocates or
-relocates and returns -1 when full (nodiscard). An element whose contents are produced rather than
-known up front is pushed as a placeholder and filled through `At(s, idx)`; `New` allocates a
-standalone object, it does not append. `Reserve(arena, s, n)` grows capacity up front so a batch
-of 2-arg pushes never steps it, and `PushUnchecked(s, v)` is the unchecked no-growth fast path
-(debug-only bounds trap). `Push`/`PushUnchecked` return the new element's index. Elements are read
-and written through `At(s, i)` or `s->data[i]` directly; never hold element pointers across a
-growing call.
+`PushGrow(arena, s)` is the always-growing form: it returns an uninitialized slot, requires a movable
+`Slice`, and may relocate. `Push(arena, s)` grows only when the backing ends at the arena tip (or the
+slice is empty): an in-place capacity bump, so nothing moves; off-tip it returns NULL when full
+(uninitialized slot on success). `Push(&b)` is the fixed-capacity form: `FixedSlice` only, never
+allocates or relocates, and returns NULL when full (uninitialized slot). A movable `Slice` must
+name its arena, via `Push(arena, s)` or `PushGrow`; `Push(movable)` is a compile error. Elements
+are written through the returned pointer: `*PushGrow(arena, s) = v;` (caller must initialize
+`*slot` before reading). An element
+whose contents are produced rather than known up front is written field by field through the
+slot; `New` allocates a standalone object, it does not append. `Reserve(arena, s, n)` grows
+capacity up front to avoid `NULL` checks in fill loops (debug builds still trap on state
+violations). A held slot dies at the next growing call: reacquire it after `Push(arena, s)`,
+`PushGrow`/`Reserve`, or reach elements by index with `At(s, i)`.
 
 `Slice(T)` is a plain descriptor union (`T *data`, `len`, `cap`) that expands directly to an
 anonymous union — no `__typeof__`, no array wrapper. `Slice(struct Point)` and
@@ -102,7 +104,7 @@ expression only where required. Each operation macro binds its slice/value/capac
 once (checks are unevaluated).
 
 **Allocation order is semantically load-bearing.** Several "optimizations" are really contracts
-with the caller: `arena_free` only reclaims when the pointer is at the bump tip; `Push` grows in
+with the caller: `arena_free` only reclaims when the pointer is at the bump tip; `PushGrow` grows in
 place only when the slice sits at the tip; `astr_clone`/`astr_concat` skip copying when the source
 ends exactly at `arena->cur`, and a concat whose tail starts right where an at-tip head ends (the
 `s = astr_concat(arena, s, astr_format(arena, ...))` chain shape) extends `s` in place with no
