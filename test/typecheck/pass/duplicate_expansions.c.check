@@ -5,7 +5,7 @@ typedef Slice(int) ints_a;
 typedef Slice(int) ints_b;
 
 int use(Arena* arena, ints_a *a, ints_b *b) {
-  *PushGrow(arena, a) = 1;
-  *PushGrow(arena, b) = 2;
+  *Push(arena, a) = 1;
+  *Push(arena, b) = 2;
   return a->data[0] + b->data[0];
 }

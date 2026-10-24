@@ -5,5 +5,5 @@
 #include "arena.h"
 
 void use(Arena* arena, int* raw) {
-  *PushGrow(arena, raw) = 1;
+  *Push(arena, raw) = 1;
 }

@@ -7,5 +7,5 @@ typedef FixedSlice(const int) cfints;
 void use(Arena* arena) {
   cfints b = {0};
   SliceFixed(arena, &b, 4);
-  *Push(&b) = 1;
+  *TryPush(&b) = 1;
 }

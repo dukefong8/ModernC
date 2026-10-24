@@ -66,7 +66,7 @@ UTEST(slice, from_array_copy_owns_storage) {
   data[1] = 99;
   ASSERT_EQ(s->data[1], 20);
 
-  *PushGrow(arena, s) = 40;  // ordinary movable growth
+  *Push(arena, s) = 40;  // ordinary movable growth
   ASSERT_EQ(s->len, 4);
   ASSERT_EQ(s->data[3], 40);
 }
@@ -116,7 +116,7 @@ struct SliceHolder {
 };
 
 static void slice_append(Arena* arena, ints* s, int v) {
-  *PushGrow(arena, s) = v;
+  *Push(arena, s) = v;
 }
 
 UTEST(slice, descriptor_is_arena_owned) {
@@ -140,9 +140,9 @@ UTEST(slice, descriptor_is_arena_owned) {
   // A New-allocated record can hold a slice inline or by pointer. Both are
   // arena-owned and are passed to slice operations by address.
   struct SliceHolder* h = New(arena, struct SliceHolder);
-  *PushGrow(arena, &h->items) = 2;
+  *Push(arena, &h->items) = 2;
   h->extra = New(arena, ints);
-  *PushGrow(arena, h->extra) = 3;
+  *Push(arena, h->extra) = 3;
   ASSERT_EQ(h->items.len, 1);
   ASSERT_EQ(h->items.data[0], 2);
   ASSERT_EQ(h->extra->data[0], 3);
@@ -151,7 +151,7 @@ UTEST(slice, descriptor_is_arena_owned) {
   // stays fixed because the descriptor itself lives in the arena.
   ints* descriptor = s;
   for (int i = 0; i < 100; i++)
-    *PushGrow(arena, s) = i;
+    *Push(arena, s) = i;
   ASSERT_TRUE(s == descriptor);
   ASSERT_EQ(s->len, 101);
   ASSERT_EQ(s->data[1], 0);
@@ -174,7 +174,7 @@ UTEST(slice, fixed_init_and_push) {
   int* base = s.data;
   byte* cur = arena->cur;
   for (int i = 0; i < 8; i++) {
-    int* slot = Push(&s);
+    int* slot = TryPush(&s);
     ASSERT_TRUE(slot != NULL);
     *slot = i * 3;
     ASSERT_EQ(slot - s.data, i);
@@ -190,9 +190,9 @@ UTEST(slice, fixed_init_and_push) {
   ASSERT_EQ(c->len, 8);
   ASSERT_EQ(c->data[7], 21);
 
-  // The copy is an ordinary movable Slice, so later PushGrow takes the growable
+  // The copy is an ordinary movable Slice, so later Push takes the growable
   // path.
-  *PushGrow(arena, c) = 22;  // ordinary growable Slice
+  *Push(arena, c) = 22;  // ordinary growable Slice
   ASSERT_EQ(c->len, 9);
   ASSERT_EQ(c->data[8], 22);
 }
@@ -212,7 +212,7 @@ UTEST(slice, movable_reserve_at_tip_extends_in_place) {
   int* base = t->data;
 
   for (int i = 0; i < 8; i++)
-    *PushGrow(arena, t) = i * 10;
+    *Push(arena, t) = i * 10;
   ASSERT_TRUE(t->data == base);  // in-capacity pushes never move
   ASSERT_EQ(t->data[0], 0);
 
@@ -221,7 +221,7 @@ UTEST(slice, movable_reserve_at_tip_extends_in_place) {
   ASSERT_EQ(t->data[0], 0);
 
   isize idx = t->len;
-  *PushGrow(arena, t) = 99;
+  *Push(arena, t) = 99;
   ASSERT_EQ(idx, t->len - 1);
   ASSERT_EQ(t->data[idx], 99);
   ASSERT_EQ(t->data[0], 0);
@@ -237,12 +237,12 @@ UTEST(slice, movable_within_cap_is_off_tip_safe) {
   ints* t = New(arena, ints);
   Reserve(arena, t, 4);
   int* base = t->data;
-  *PushGrow(arena, t) = 1;
+  *Push(arena, t) = 1;
 
   New(arena, char);  // off-tip, but the handle still has spare capacity
 
   isize idx = t->len;
-  *PushGrow(arena, t) = 2;  // no growth: still in place
+  *Push(arena, t) = 2;  // no growth: still in place
   ASSERT_TRUE(t->data == base);
   ASSERT_EQ(idx, 1);
 
@@ -261,10 +261,10 @@ UTEST(slice, class_fixed_to_movable) {
 
   fints b = {0};
   SliceFixed(arena, &b, 4);
-  int* slot = Push(&b);
+  int* slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[0]);
   *slot = 1;
-  slot = Push(&b);
+  slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[1]);
   *slot = 2;
 
@@ -273,9 +273,9 @@ UTEST(slice, class_fixed_to_movable) {
   ASSERT_EQ(copy->len, 2);
   ASSERT_TRUE(copy->data != b.data);
   ASSERT_EQ(copy->data[1], 2);
-  *PushGrow(arena, copy) = 3;  // ordinary movable growth
+  *Push(arena, copy) = 3;  // ordinary movable growth
   ASSERT_EQ(copy->len, 3);
-  *PushGrow(arena, copy) = 4;
+  *Push(arena, copy) = 4;
   ASSERT_EQ(copy->len, 4);
 }
 
@@ -287,14 +287,14 @@ UTEST(slice, class_movable_to_fixed_rebuild) {
   Arena arena[] = {arena_init(mem, size)};
 
   ints* g = New(arena, ints);
-  *PushGrow(arena, g) = 1;
-  *PushGrow(arena, g) = 2;
-  *PushGrow(arena, g) = 3;
+  *Push(arena, g) = 1;
+  *Push(arena, g) = 2;
+  *Push(arena, g) = 3;
 
   fints b = {0};
   SliceFixed(arena, &b, g->len);
   for (isize i = 0; i < g->len; i++) {
-    int* slot = Push(&b);
+    int* slot = TryPush(&b);
     ASSERT_EQ(slot, &b.data[i]);
     *slot = g->data[i];
   }
@@ -323,7 +323,7 @@ UTEST(slice, empty_slice_grows_from_zero) {
 
   // Growing the empty slice allocates fresh arena storage.
   byte* cur = arena->cur;
-  *PushGrow(arena, s) = 7;
+  *Push(arena, s) = 7;
   ASSERT_EQ(s->len, 1);
   ASSERT_TRUE((void*)s->data == (void*)cur);
   ASSERT_EQ(s->data[0], 7);
@@ -360,7 +360,7 @@ UTEST(slice, empty_movable_grows_at_tip) {
   ASSERT_EQ(t->cap, 0);
 
   byte* cur = arena->cur;
-  *PushGrow(arena, t) = 5;
+  *Push(arena, t) = 5;
   ASSERT_EQ(t->len, 1);
   ASSERT_TRUE(t->cap >= 1);
   ASSERT_TRUE((void*)t->data == (void*)cur);
@@ -384,7 +384,7 @@ UTEST(slice, empty_off_tip_can_grow) {
   ints* movable = New(arena, ints);
   New(arena, char);  // off-tip before the empty movable slice grows
   byte* cur = arena->cur;
-  *PushGrow(arena, movable) = 1;
+  *Push(arena, movable) = 1;
   ASSERT_TRUE((byte*)movable->data >= cur);
   ASSERT_EQ((uintptr_t)movable->data % (uintptr_t)alignof(int), (uintptr_t)0);
   ASSERT_EQ(movable->data[0], 1);
@@ -392,7 +392,7 @@ UTEST(slice, empty_off_tip_can_grow) {
   ints* t = New(arena, ints);
   New(arena, char);  // off-tip before the second empty slice grows
   byte* cur2 = arena->cur;
-  *PushGrow(arena, t) = 2;
+  *Push(arena, t) = 2;
   ASSERT_TRUE((byte*)t->data >= cur2);
   ASSERT_EQ((uintptr_t)t->data % (uintptr_t)alignof(int), (uintptr_t)0);
   ASSERT_EQ(t->data[0], 2);
@@ -404,8 +404,8 @@ UTEST(slice, overlapping_slices_nested_scratch) {
   Arena arena[] = {arena_init(mem, size)};
 
   ints* outer = New(arena, ints);
-  *PushGrow(arena, outer) = 10;
-  *PushGrow(arena, outer) = 20;
+  *Push(arena, outer) = 10;
+  *Push(arena, outer) = 20;
   int* outer_data = outer->data;
   byte* outer_cur = arena->cur;
 
@@ -414,7 +414,7 @@ UTEST(slice, overlapping_slices_nested_scratch) {
 
     ints* inner = New(arena, ints);
     for (int i = 1; i <= 4; i++)
-      *PushGrow(arena, inner) = i;
+      *Push(arena, inner) = i;
 
     // Overlapping structural descriptors over the same arena elements.
     ints* alias = New(arena, ints);
@@ -451,7 +451,7 @@ UTEST(slice, overlapping_slices_nested_scratch) {
     {
       Scratch(arena);
       ints* deeper = New(arena, ints);
-      *PushGrow(arena, deeper) = 7;
+      *Push(arena, deeper) = 7;
       ASSERT_GT(arena->cur, (byte*)inner->data);
     }
 
@@ -464,13 +464,13 @@ UTEST(slice, overlapping_slices_nested_scratch) {
   ASSERT_EQ(arena->cur, outer_cur);
   ASSERT_TRUE(outer->data == outer_data);
   ASSERT_EQ(outer->data[0], 10);
-  *PushGrow(arena, outer) = 30;  // spare capacity, no growth needed
+  *Push(arena, outer) = 30;  // spare capacity, no growth needed
   ASSERT_TRUE(outer->data == outer_data);
 
   // Outer is at the tip again after Scratch: fill it, then extend in place.
   while (outer->len < outer->cap)
-    *PushGrow(arena, outer) = 0;
-  *PushGrow(arena, outer) = 31;
+    *Push(arena, outer) = 0;
+  *Push(arena, outer) = 31;
   ASSERT_TRUE(outer->data == outer_data);
   ASSERT_EQ(outer->data[outer->len - 1], 31);
 }
@@ -482,22 +482,22 @@ UTEST(slice, class_movable_moves) {
   Arena arena[] = {arena_init(mem, size)};
 
   ints* s = New(arena, ints);
-  *PushGrow(arena, s) = 1;
+  *Push(arena, s) = 1;
   int* old = s->data;
 
   New(arena, char);  // the slice is no longer at the arena tip
 
   while (s->len < s->cap)
-    *PushGrow(arena, s) = 0;
+    *Push(arena, s) = 0;
 
-  *PushGrow(arena, s) = 99;  // full and off-tip: grow by moving
+  *Push(arena, s) = 99;  // full and off-tip: grow by moving
   ASSERT_TRUE(s->data != old);
   ASSERT_EQ(s->data[0], 1);
   ASSERT_EQ(s->data[s->len - 1], 99);
 }
 
 UTEST(slice, movable_push_at_tip_grows_in_place) {
-  // Movable PushGrow extends capacity in place while the block ends at the tip.
+  // Movable Push extends capacity in place while the block ends at the tip.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -507,13 +507,13 @@ UTEST(slice, movable_push_at_tip_grows_in_place) {
   int* base = t->data;
   byte* cur = arena->cur;
 
-  *PushGrow(arena, t) = 10;
-  *PushGrow(arena, t) = 20;
+  *Push(arena, t) = 10;
+  *Push(arena, t) = 20;
   ASSERT_TRUE(t->data == base);
   ASSERT_EQ(arena->cur, cur);  // spare capacity: no arena activity
 
   isize idx = t->len;
-  *PushGrow(arena, t) = 30;  // full, at tip: grow in place
+  *Push(arena, t) = 30;  // full, at tip: grow in place
   ASSERT_TRUE(t->data == base);
   ASSERT_TRUE(t->cap > 2);
   ASSERT_TRUE(arena->cur > cur);
@@ -523,7 +523,7 @@ UTEST(slice, movable_push_at_tip_grows_in_place) {
 }
 
 UTEST(slice, push_arena_form_grows_at_tip) {
-  // Push(arena, s) extends at the arena tip and keeps the backing in place.
+  // TryPush(arena, s) extends at the arena tip and keeps the backing in place.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -531,13 +531,13 @@ UTEST(slice, push_arena_form_grows_at_tip) {
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
   for (int i = 0; i < 4; i++)
-    *Push(arena, s) = i;
+    *TryPush(arena, s) = i;
   ASSERT_EQ(s->len, 4);
   ASSERT_EQ(s->cap, 4);
 
   int* base = s->data;
   byte* cur = arena->cur;
-  int* slot = Push(arena, s);
+  int* slot = TryPush(arena, s);
   ASSERT_TRUE(slot != NULL);
   *slot = 42;
 
@@ -549,13 +549,13 @@ UTEST(slice, push_arena_form_grows_at_tip) {
 }
 
 UTEST(slice, push_arena_form_allocates_empty_slice) {
-  // An empty slice has nothing to move, so Push(arena, s) may allocate it.
+  // An empty slice has nothing to move, so TryPush(arena, s) may allocate it.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
 
   ints* s = New(arena, ints);
-  int* slot = Push(arena, s);
+  int* slot = TryPush(arena, s);
   ASSERT_TRUE(slot != NULL);
   *slot = 7;
 
@@ -566,7 +566,7 @@ UTEST(slice, push_arena_form_allocates_empty_slice) {
 }
 
 UTEST(slice, push_arena_form_off_tip_full_returns_null) {
-  // Off the tip, Push(arena, s) refuses to move: full means NULL.
+  // Off the tip, TryPush(arena, s) refuses to move: full means NULL.
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -574,14 +574,14 @@ UTEST(slice, push_arena_form_off_tip_full_returns_null) {
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
   for (int i = 0; i < 4; i++)
-    *Push(arena, s) = i;
+    *TryPush(arena, s) = i;
 
   New(arena, char);  // move the slice off the arena tip
   int* base = s->data;
   isize cap = s->cap;
   byte* cur = arena->cur;
 
-  ASSERT_TRUE(Push(arena, s) == NULL);
+  ASSERT_TRUE(TryPush(arena, s) == NULL);
   ASSERT_TRUE(s->data == base);
   ASSERT_EQ(s->cap, cap);
   ASSERT_EQ(arena->cur, cur);
@@ -589,7 +589,7 @@ UTEST(slice, push_arena_form_off_tip_full_returns_null) {
 }
 
 UTEST(slice, push_arena_form_uses_spare_capacity_off_tip) {
-  // With spare capacity, Push(arena, s) writes in place and never allocates,
+  // With spare capacity, TryPush(arena, s) writes in place and never allocates,
   // even when the slice is off the arena tip.
   enum { size = KB(4) };
   byte mem[size] = {0};
@@ -597,12 +597,12 @@ UTEST(slice, push_arena_form_uses_spare_capacity_off_tip) {
 
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
-  *Push(arena, s) = 1;
+  *TryPush(arena, s) = 1;
   New(arena, char);  // off-tip, but the slice has spare capacity
 
   int* base = s->data;
   byte* cur = arena->cur;
-  int* slot = Push(arena, s);
+  int* slot = TryPush(arena, s);
   ASSERT_TRUE(slot != NULL);
   *slot = 2;
 
@@ -633,7 +633,7 @@ UTEST(slice, movable_reserve_off_tip_within_cap) {
 
   ints* t = New(arena, ints);
   Reserve(arena, t, 4);
-  *PushGrow(arena, t) = 1;
+  *Push(arena, t) = 1;
 
   New(arena, char);  // t is off-tip
   int* base = t->data;
@@ -644,7 +644,7 @@ UTEST(slice, movable_reserve_off_tip_within_cap) {
   ASSERT_EQ(t->cap, 4);
 
   // Push within spare capacity is still an in-place write off-tip.
-  *PushGrow(arena, t) = 2;
+  *Push(arena, t) = 2;
   ASSERT_TRUE(t->data == base);
   ASSERT_EQ(t->len, 2);
   ASSERT_EQ(t->data[1], 2);
@@ -660,11 +660,11 @@ UTEST(slice, movable_address_stable_after_at_tip_growth) {
 
   ints* t = New(arena, ints);
   Reserve(arena, t, 2);
-  *PushGrow(arena, t) = 10;
+  *Push(arena, t) = 10;
   int* first = &t->data[0];
 
-  *PushGrow(arena, t) = 20;  // still within cap
-  *PushGrow(arena, t) = 30;  // full, at tip: grow in place
+  *Push(arena, t) = 20;  // still within cap
+  *Push(arena, t) = 30;  // full, at tip: grow in place
 
   ASSERT_TRUE(&t->data[0] == first);
   ASSERT_EQ(*first, 10);
@@ -679,7 +679,7 @@ UTEST(slice, fixed_push_unchecked) {
   fints b = {0};
   SliceFixed(arena, &b, 4);
 
-  int* pslot = Push(&b);
+  int* pslot = TryPush(&b);
   Assert(pslot != NULL);
   *pslot = 7;
   ASSERT_EQ(b.data[0], 7);
@@ -697,10 +697,10 @@ UTEST(slice, fixed_struct_clone) {
 
   fpoints b = {0};
   SliceFixed(arena, &b, 2);
-  struct Point* slot = Push(&b);
+  struct Point* slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[0]);
   *slot = (struct Point){1, 2};
-  slot = Push(&b);
+  slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[1]);
   *slot = (struct Point){3, 4};
 
@@ -722,7 +722,7 @@ static fints fixed_build(Arena* arena, isize cap, isize len) {
   fints b = {0};
   SliceFixed(arena, &b, cap);
   for (isize i = 0; i < len; i++) {
-    int* slot = Push(&b);
+    int* slot = TryPush(&b);
     Assert(slot != NULL);
     *slot = (int)(i * 10);
   }
@@ -737,7 +737,7 @@ static int fixed_sum(fints view) {
 }
 
 static isize fixed_push_copy(fints view, int v) {
-  int* slot = Push(&view);
+  int* slot = TryPush(&view);
   if (!slot)
     return -1;
   *slot = v;
@@ -768,7 +768,7 @@ UTEST(slice, fixed_by_value_aliasing_and_mutation) {
 
   // Length/capacity are descriptor-local: appending through one copy does
   // not advance the others, but writes the same backing block.
-  int* slot = Push(&copy);
+  int* slot = TryPush(&copy);
   ASSERT_EQ(slot, &copy.data[4]);
   *slot = 40;
   ASSERT_EQ(copy.len, 5);
@@ -810,7 +810,7 @@ UTEST(slice, movable_descriptor_lifetime) {
   Arena arena[] = {arena_init(mem, size)};
 
   ints* s = New(arena, ints);
-  *PushGrow(arena, s) = 1;
+  *Push(arena, s) = 1;
   int* data = s->data;
 
   {
@@ -839,8 +839,8 @@ UTEST(slice, movable_by_pointer_aliasing_and_relocation) {
   // The supported movable model is one arena-owned descriptor, passed by
   // pointer. Pointer aliases observe every mutation, including relocation.
   ints* s = New(arena, ints);
-  *PushGrow(arena, s) = 1;
-  *PushGrow(arena, s) = 2;
+  *Push(arena, s) = 1;
+  *Push(arena, s) = 2;
   ints* alias = s;
   ASSERT_TRUE(alias == s);
   ASSERT_EQ(alias->len, 2);
@@ -853,9 +853,9 @@ UTEST(slice, movable_by_pointer_aliasing_and_relocation) {
 
   New(arena, char);  // take the movable slice off the arena tip
   while (s->len < s->cap)
-    *PushGrow(arena, s) = 0;
+    *Push(arena, s) = 0;
   int* old_data = s->data;
-  *PushGrow(arena, s) = 99;  // full and off-tip: relocate
+  *Push(arena, s) = 99;  // full and off-tip: relocate
 
   ASSERT_TRUE(s->data != old_data);
   ASSERT_TRUE(copy.data == old_data);   // value copy still points at old block
@@ -873,7 +873,7 @@ UTEST(slice, fixed_never_relocates_movable_does) {
   int* fixed_base = f.data;
 
   ints* m = New(arena, ints);
-  *PushGrow(arena, m) = 1;
+  *Push(arena, m) = 1;
   int* movable_base = m->data;
 
   New(arena, char);  // both are off the arena tip
@@ -881,7 +881,7 @@ UTEST(slice, fixed_never_relocates_movable_does) {
 
   // Fixed appends never allocate or relocate, even off-tip.
   for (int i = 0; i < 8; i++) {
-    int* slot = Push(&f);
+    int* slot = TryPush(&f);
     ASSERT_EQ(slot, &f.data[i]);
     *slot = i;
   }
@@ -890,8 +890,8 @@ UTEST(slice, fixed_never_relocates_movable_does) {
 
   // Movable growth off-tip relocates its backing block.
   while (m->len < m->cap)
-    *PushGrow(arena, m) = 0;
-  *PushGrow(arena, m) = 99;
+    *Push(arena, m) = 0;
+  *Push(arena, m) = 99;
   ASSERT_TRUE(m->data != movable_base);
 }
 
@@ -903,7 +903,7 @@ UTEST(slice, at_tip_query) {
   ints* m = New(arena, ints);
   ASSERT_TRUE(SliceAtTip(arena, m));  // empty: no backing block, nothing to move
 
-  *PushGrow(arena, m) = 1;
+  *Push(arena, m) = 1;
   ASSERT_TRUE(SliceAtTip(arena, m));
 
   fints f = {0};
@@ -956,9 +956,9 @@ UTEST(slice, pop_returns_last_and_decrements) {
   Arena arena[] = {arena_init(mem, size)};
 
   ints* s = New(arena, ints);
-  *PushGrow(arena, s) = 10;
-  *PushGrow(arena, s) = 20;
-  *PushGrow(arena, s) = 30;
+  *Push(arena, s) = 10;
+  *Push(arena, s) = 20;
+  *Push(arena, s) = 30;
   int* base = s->data;
   isize cap = s->cap;
 
@@ -980,7 +980,7 @@ UTEST(slice, pop_returns_last_and_decrements) {
   ASSERT_EQ(top, -1);
 
   // The popped slots are still owned by the slice; Push reuses them in place.
-  *PushGrow(arena, s) = 40;
+  *Push(arena, s) = 40;
   ASSERT_TRUE(s->data == base);
   ASSERT_EQ(s->len, 1);
   ASSERT_EQ(s->data[0], 40);
@@ -994,10 +994,10 @@ UTEST(slice, pop_fixed) {
   fints b = {0};
   SliceFixed(arena, &b, 4);
   int* base = b.data;
-  int* slot = Push(&b);
+  int* slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[0]);
   *slot = 1;
-  slot = Push(&b);
+  slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[1]);
   *slot = 2;
 
@@ -1008,7 +1008,7 @@ UTEST(slice, pop_fixed) {
   ASSERT_EQ(b.len, 1);
   ASSERT_TRUE(b.data == base);
 
-  slot = Push(&b);
+  slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[1]);  // fixed push after pop reuses the slot
   *slot = 3;
   ASSERT_EQ(b.len, 2);
@@ -1022,7 +1022,7 @@ UTEST(slice, pop_struct_value) {
   Arena arena[] = {arena_init(mem, size)};
 
   points* s = New(arena, points);
-  *PushGrow(arena, s) = ((struct Point){1, 2});
+  *Push(arena, s) = ((struct Point){1, 2});
 
   struct Point top;
   ASSERT_TRUE(Pop(s, &top));
@@ -1038,10 +1038,10 @@ UTEST(slice, push_then_pop_returns_same_value) {
   Arena arena[] = {arena_init(mem, size)};
 
   ints* s = New(arena, ints);
-  *PushGrow(arena, s) = 7;  // a value that must survive the round trips
+  *Push(arena, s) = 7;  // a value that must survive the round trips
   for (int v = -3; v <= 3; v++) {
     isize idx = s->len;
-    *PushGrow(arena, s) = v;
+    *Push(arena, s) = v;
     ASSERT_EQ(idx, s->len - 1);
     ASSERT_EQ(s->data[idx], v);
     int popped = 0;
@@ -1052,7 +1052,7 @@ UTEST(slice, push_then_pop_returns_same_value) {
   }
 
   points* ps = New(arena, points);
-  *PushGrow(arena, ps) = ((struct Point){3, 4});
+  *Push(arena, ps) = ((struct Point){3, 4});
   struct Point p;
   ASSERT_TRUE(Pop(ps, &p));
   ASSERT_EQ(p.x, 3);
@@ -1067,7 +1067,7 @@ UTEST(slice, pop_then_push_is_noop) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 4; i++)
-    *PushGrow(arena, s) = i * 10;
+    *Push(arena, s) = i * 10;
   int* data = s->data;
   isize len = s->len;
   isize cap = s->cap;
@@ -1076,7 +1076,7 @@ UTEST(slice, pop_then_push_is_noop) {
   int popped = 0;
   ASSERT_TRUE(Pop(s, &popped));
   ASSERT_EQ(popped, last);
-  *PushGrow(arena, s) = popped;
+  *Push(arena, s) = popped;
 
   ASSERT_EQ(s->len, len);
   ASSERT_EQ(s->cap, cap);
@@ -1088,7 +1088,7 @@ UTEST(slice, pop_then_push_is_noop) {
   fints b = {0};
   SliceFixed(arena, &b, 4);
   for (int i = 0; i < 3; i++) {
-    int* slot = Push(&b);
+    int* slot = TryPush(&b);
     ASSERT_EQ(slot, &b.data[i]);
     *slot = i + 1;
   }
@@ -1100,7 +1100,7 @@ UTEST(slice, pop_then_push_is_noop) {
   int bpopped = 0;
   ASSERT_TRUE(Pop(&b, &bpopped));
   ASSERT_EQ(bpopped, blast);
-  int* slot = Push(&b);
+  int* slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[blen - 1]);
   *slot = bpopped;
 
@@ -1118,18 +1118,18 @@ UTEST(slice, movable_pop_then_push_is_noop) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 16; i++)
-    *PushGrow(arena, s) = i;
+    *Push(arena, s) = i;
   int* before = s->data;
   isize cap_before = s->cap;
 
-  New(arena, char);          // move the slice off the arena tip
-  *PushGrow(arena, s) = 16;  // full and off-tip: class 4 relocates
+  New(arena, char);      // move the slice off the arena tip
+  *Push(arena, s) = 16;  // full and off-tip: class 4 relocates
   ASSERT_TRUE(s->data != before);
   ASSERT_TRUE(s->cap > cap_before);
 
-  // A relocated movable Slice still round-trips values through PushGrow/Pop.
+  // A relocated movable Slice still round-trips values through Push/Pop.
   int roundtrip = 1234;
-  *PushGrow(arena, s) = roundtrip;
+  *Push(arena, s) = roundtrip;
   int rt = 0;
   ASSERT_TRUE(Pop(s, &rt));
   ASSERT_EQ(rt, roundtrip);
@@ -1137,7 +1137,7 @@ UTEST(slice, movable_pop_then_push_is_noop) {
   // Fill the relocated block to capacity: Pop then Push must reuse the last
   // slot instead of triggering another growth/move.
   while (s->len < s->cap)
-    *PushGrow(arena, s) = 0;
+    *Push(arena, s) = 0;
   int* data = s->data;
   isize len = s->len;
   isize cap = s->cap;
@@ -1147,7 +1147,7 @@ UTEST(slice, movable_pop_then_push_is_noop) {
   int popped = 0;
   ASSERT_TRUE(Pop(s, &popped));
   ASSERT_EQ(popped, last);
-  *PushGrow(arena, s) = popped;
+  *Push(arena, s) = popped;
 
   ASSERT_EQ(s->len, len);
   ASSERT_EQ(s->cap, cap);
@@ -1163,14 +1163,14 @@ UTEST(slice, push_grow_move_then_pop) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 16; i++)
-    *PushGrow(arena, s) = i;
+    *Push(arena, s) = i;
   int* old_data = s->data;
   isize old_cap = s->cap;
 
   New(arena, char);  // the full slice is no longer at the arena tip
   int sentinel = 123456;
   isize idx = s->len;
-  *PushGrow(arena, s) = sentinel;  // growth: memmove old elements
+  *Push(arena, s) = sentinel;  // growth: memmove old elements
 
   ASSERT_TRUE(s->data != old_data);
   ASSERT_TRUE(s->cap > old_cap);
@@ -1200,14 +1200,14 @@ UTEST(slice, class_fixed_push_full_returns_null) {
 
   fints b = {0};
   SliceFixed(arena, &b, 2);
-  int* slot = Push(&b);
+  int* slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[0]);
   *slot = 10;
-  slot = Push(&b);
+  slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[1]);
   *slot = 20;
   ASSERT_EQ(b.len, 2);
-  ASSERT_TRUE(Push(&b) == NULL);
+  ASSERT_TRUE(TryPush(&b) == NULL);
   ASSERT_EQ(b.len, 2);
   ASSERT_EQ(b.data[0], 10);
   ASSERT_EQ(b.data[1], 20);
@@ -1215,7 +1215,7 @@ UTEST(slice, class_fixed_push_full_returns_null) {
   // Capacity 0 is a valid empty fixed slice: every Push returns NULL.
   fints e = {0};
   SliceFixed(arena, &e, 0);
-  ASSERT_TRUE(Push(&e) == NULL);
+  ASSERT_TRUE(TryPush(&e) == NULL);
   ASSERT_EQ(e.len, 0);
 }
 
@@ -1228,30 +1228,30 @@ UTEST(slice, movable_push_arena_form_never_moves) {
   Reserve(arena, s, 4);  // reserve before taking references
   int* base = s->data;
 
-  int* slot = Push(arena, s);
+  int* slot = TryPush(arena, s);
   ASSERT_EQ(slot, &s->data[0]);
   *slot = 10;
-  slot = Push(arena, s);
+  slot = TryPush(arena, s);
   ASSERT_EQ(slot, &s->data[1]);
   *slot = 20;
 
-  New(arena, char);  // off-tip; Push(arena, s) must still not move it
+  New(arena, char);  // off-tip; TryPush(arena, s) must still not move it
   byte* cur = arena->cur;
-  slot = Push(arena, s);
+  slot = TryPush(arena, s);
   ASSERT_EQ(slot, &s->data[2]);
   *slot = 30;
-  slot = Push(arena, s);
+  slot = TryPush(arena, s);
   ASSERT_EQ(slot, &s->data[3]);
   *slot = 40;
-  ASSERT_TRUE(Push(arena, s) == NULL);  // full off-tip: no append, no growth
+  ASSERT_TRUE(TryPush(arena, s) == NULL);  // full off-tip: no append, no growth
   ASSERT_TRUE(s->data == base);
   ASSERT_EQ(s->len, 4);
   ASSERT_EQ(arena->cur, cur);
   ASSERT_EQ(base[3], 40);
 
-  // PushGrow remains the growth path and may relocate.
+  // Push remains the growth path and may relocate.
   isize idx = s->len;
-  *PushGrow(arena, s) = 50;
+  *Push(arena, s) = 50;
   ASSERT_EQ(idx, 4);
   ASSERT_TRUE(s->data != base);
   ASSERT_EQ(s->data[4], 50);
@@ -1272,7 +1272,7 @@ UTEST(slice, pop_empty_is_safe) {
   ASSERT_EQ(s->cap, 0);
 
   // Empty after draining a slice with spare capacity: false, not underflow.
-  *PushGrow(arena, s) = 7;
+  *Push(arena, s) = 7;
   ASSERT_TRUE(Pop(s, &top));
   ASSERT_EQ(top, 7);
   int* data = s->data;
@@ -1290,7 +1290,7 @@ UTEST(slice, pop_empty_is_safe) {
   int btop = 123;
   ASSERT_FALSE(Pop(&b, &btop));
   ASSERT_EQ(btop, 123);
-  int* slot = Push(&b);
+  int* slot = TryPush(&b);
   ASSERT_EQ(slot, &b.data[0]);
   *slot = 9;
   ASSERT_TRUE(Pop(&b, &btop));
@@ -1309,7 +1309,7 @@ UTEST(slice, clone_full) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 5; i++)
-    *PushGrow(arena, s) = i * 10;
+    *Push(arena, s) = i * 10;
 
   ints* copy = New(arena, ints);
   Clone(arena, copy, s);
@@ -1326,7 +1326,7 @@ UTEST(slice, clone_subslice) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 10; i++)
-    *PushGrow(arena, s) = i;
+    *Push(arena, s) = i;
 
   ints* mid = New(arena, ints);
   Clone(arena, mid, s, 3, 4);
@@ -1344,7 +1344,7 @@ UTEST(slice, push_grow_many) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 200; i++)
-    *PushGrow(arena, s) = i;
+    *Push(arena, s) = i;
 
   ASSERT_EQ(s->len, 200);
   ASSERT_TRUE(s->cap >= 200);
@@ -1352,7 +1352,7 @@ UTEST(slice, push_grow_many) {
     ASSERT_EQ(s->data[i], i);
 
   isize idx = s->len;
-  *PushGrow(arena, s) = 999;
+  *Push(arena, s) = 999;
   ASSERT_EQ(idx, 200);
   ASSERT_EQ(s->data[idx], 999);
   ASSERT_EQ(s->len, 201);
@@ -1371,7 +1371,7 @@ UTEST(slice, push_unchecked_fills_reserved) {
   byte* cur = arena->cur;
 
   for (int i = 0; i < 200; i++) {
-    int* pslot = Push(arena, s);
+    int* pslot = TryPush(arena, s);
     Assert(pslot != NULL);
     *pslot = i * 2;
   }
@@ -1389,17 +1389,17 @@ UTEST(slice, push_unchecked_shares_state_with_push) {
 
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
-  *Push(arena, s) = 1;
-  *Push(arena, s) = 2;
+  *TryPush(arena, s) = 1;
+  *TryPush(arena, s) = 2;
 
   // Checked Push sees the unchecked len and grows past the reserved room.
-  *PushGrow(arena, s) = 3;
-  *PushGrow(arena, s) = 4;
-  *PushGrow(arena, s) = 5;
+  *Push(arena, s) = 3;
+  *Push(arena, s) = 4;
+  *Push(arena, s) = 5;
   ASSERT_EQ(s->len, 5);
 
   // The slice now has fresh room again: fill it unchecked.
-  *Push(arena, s) = 6;
+  *TryPush(arena, s) = 6;
   ASSERT_EQ(s->len, 6);
   for (int i = 0; i < 6; i++)
     ASSERT_EQ(s->data[i], i + 1);
@@ -1412,7 +1412,7 @@ UTEST(slice, push_unchecked_top_up_partially_filled) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 3; i++)
-    *PushGrow(arena, s) = i * 10;
+    *Push(arena, s) = i * 10;
 
   // s->len + n rooms n more pushes on top of the 3 already held.
   Reserve(arena, s, s->len + 100);
@@ -1420,7 +1420,7 @@ UTEST(slice, push_unchecked_top_up_partially_filled) {
   byte* cur = arena->cur;
 
   for (int i = 0; i < 100; i++) {
-    int* pslot = Push(arena, s);
+    int* pslot = TryPush(arena, s);
     Assert(pslot != NULL);
     *pslot = i;
   }
@@ -1445,7 +1445,7 @@ UTEST(slice, reserve_grows_up_front) {
 
   isize cap = s->cap;
   for (int i = 0; i < 200; i++)
-    *PushGrow(arena, s) = i;
+    *Push(arena, s) = i;
 
   ASSERT_EQ(s->cap, cap);  // reserved once, grown never
   ASSERT_EQ(s->len, 200);
@@ -1459,7 +1459,7 @@ UTEST(slice, reserve_preserves_elements) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 3; i++)
-    *PushGrow(arena, s) = i * 10;
+    *Push(arena, s) = i * 10;
 
   int* before = s->data;
   New(arena, int, 64);  // off the arena tip: reserving must copy, not extend
@@ -1471,7 +1471,7 @@ UTEST(slice, reserve_preserves_elements) {
   ASSERT_EQ(s->data[0], 0);
   ASSERT_EQ(s->data[2], 20);
 
-  *PushGrow(arena, s) = 30;
+  *Push(arena, s) = 30;
   ASSERT_EQ(s->data[3], 30);
 }
 
@@ -1481,7 +1481,7 @@ UTEST(slice, reserve_is_grow_only) {
   Arena arena[] = {arena_init(mem, size)};
 
   ints* s = New(arena, ints);
-  *PushGrow(arena, s) = 1;
+  *Push(arena, s) = 1;
 
   isize cap = s->cap;
   Reserve(arena, s, 4);  // below current capacity
@@ -1498,7 +1498,7 @@ UTEST(slice, reserve_at_tip_extends) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 3; i++)
-    *PushGrow(arena, s) = i;
+    *Push(arena, s) = i;
 
   // At the arena tip, reserving extends the existing block instead of copying.
   int* data = s->data;
@@ -1528,7 +1528,7 @@ UTEST(slice, clone_evaluates_args_once) {
 
   ints* s = New(arena, ints);
   for (int i = 0; i < 5; i++)
-    *PushGrow(arena, s) = i * 10;
+    *Push(arena, s) = i * 10;
 
   slice_eval_calls = 0;
   ints* full = New(arena, ints);
@@ -1561,7 +1561,7 @@ UTEST(slice, macro_args_evaluated_once) {
   ints* s = New(arena, ints);
   slice_eval_calls = 0;
   isize idx = s->len;
-  *PushGrow(slice_eval_arena(arena), slice_eval_slice(s)) = slice_eval_int(7);
+  *Push(slice_eval_arena(arena), slice_eval_slice(s)) = slice_eval_int(7);
   ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, value
   ASSERT_EQ(idx, 0);
   ASSERT_EQ(s->data[idx], 7);
@@ -1606,8 +1606,8 @@ UTEST(slice, multi_token_types) {
   // Multi-token element types: struct, unsigned, pointer. Slice(T) spells
   // them as written, no intermediate typedef needed.
   points* ps = New(arena, points);
-  *PushGrow(arena, ps) = ((struct Point){1, 2});
-  *PushGrow(arena, ps) = ((struct Point){3, 4});
+  *Push(arena, ps) = ((struct Point){1, 2});
+  *Push(arena, ps) = ((struct Point){3, 4});
   ASSERT_EQ(ps->len, 2);
   ASSERT_EQ(ps->data[0].x, 1);
   ASSERT_EQ(ps->data[0].y, 2);
@@ -1615,12 +1615,12 @@ UTEST(slice, multi_token_types) {
   ASSERT_EQ(ps->data[1].y, 4);
 
   uints* us = New(arena, uints);
-  *PushGrow(arena, us) = 7u;
+  *Push(arena, us) = 7u;
   ASSERT_EQ(us->data[0], 7u);
 
   const char* hello = "hello";
   strs* ss = New(arena, strs);
-  *PushGrow(arena, ss) = hello;
+  *Push(arena, ss) = hello;
   ASSERT_EQ(ss->len, 1);
   ASSERT_TRUE(strcmp(ss->data[0], "hello") == 0);
 }
@@ -1634,8 +1634,8 @@ UTEST(slice, duplicate_expansion) {
   // scope; each expansion is usable on its own.
   ints* a = New(arena, ints);
   ints_again* b = New(arena, ints_again);
-  *PushGrow(arena, a) = 1;
-  *PushGrow(arena, b) = 2;
+  *Push(arena, a) = 1;
+  *Push(arena, b) = 2;
   ASSERT_EQ(a->len, 1);
   ASSERT_EQ(b->len, 1);
   ASSERT_EQ(a->data[0], 1);
@@ -1649,7 +1649,7 @@ UTEST(slice, push_value_struct) {
 
   points* ps = New(arena, points);
   struct Point p = {5, 6};
-  *PushGrow(arena, ps) = p;
+  *Push(arena, ps) = p;
 
   ASSERT_EQ(ps->len, 1);
   ASSERT_EQ(ps->data[0].x, 5);
@@ -1662,7 +1662,7 @@ UTEST(slice, push_value_struct) {
 // -- read(2), inflate, decode, a struct filled field by field -- is written
 // directly through the returned pointer:
 //
-//   Chunk* c = PushGrow(arena, cs);
+//   Chunk* c = Push(arena, cs);
 //   c->n = read(fd, c->data, sizeof c->data);
 //
 // Two rules: finish filling before the next growth, and after any growth reach
@@ -1696,7 +1696,7 @@ UTEST(slice, build_element_in_place) {
   // would, each starting where the last stopped. Everything is reached by
   // index, so a later growth cannot strand a held pointer.
   isize ci = cs->len;
-  PushGrow(arena, cs);  // zeroed placeholder
+  Push(arena, cs);  // zeroed placeholder
   for (int i = 0; i < 3; i++)
     At(cs, ci).n += stream_fill(At(cs, ci).data + At(cs, ci).n, (int)sizeof At(cs, ci).data - At(cs, ci).n);
 
@@ -1716,7 +1716,7 @@ UTEST(slice, fill_survives_grow) {
   chunks* cs = New(arena, chunks);
 
   isize ci = cs->len;
-  PushGrow(arena, cs);  // zeroed placeholder
+  Push(arena, cs);  // zeroed placeholder
   At(cs, ci).n = 42;
   memcpy(At(cs, ci).data, "filled before growth", 21);
   Chunk* stale = &cs->data[ci];  // raw pointers still go stale on a move
@@ -1725,7 +1725,7 @@ UTEST(slice, fill_survives_grow) {
   // place and has to memmove the elements to fresh storage.
   New(arena, int, 64);
   for (int i = 0; i < 100; i++)
-    *PushGrow(arena, cs) = (Chunk){0};
+    *Push(arena, cs) = (Chunk){0};
 
   ASSERT_EQ(cs->len, 101);
   ASSERT_EQ(At(cs, ci).n, 42);  // the fill rode along with the move
@@ -1743,7 +1743,7 @@ UTEST(slice, data_is_typed) {
   Arena arena[] = {arena_init(mem, size)};
 
   ints* s = New(arena, ints);
-  *PushGrow(arena, s) = 7;
+  *Push(arena, s) = 7;
 
   // data is T*, so elements are reachable without a macro or a cast: s->data[i]
   // is an assignable lvalue and binds to T* directly. Writes to the field are

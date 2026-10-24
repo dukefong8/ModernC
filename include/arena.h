@@ -247,7 +247,7 @@ static void autofree_impl(void* p) {
  *   {
  *     Scratch(arena);
  *     ints *tmp = New(arena, ints);
- *     *PushGrow(arena, tmp) = (int)42;
+ *     *Push(arena, tmp) = (int)42;
  *     Clone(out, kept, tmp);                    // last in the block
  *   }
  */
@@ -289,7 +289,7 @@ typedef struct SliceInternal {
  *
  *   typedef Slice(int) ints;
  *   ints *s = New(arena, ints);
- *   *PushGrow(arena, s) = 42;
+ *   *Push(arena, s) = 42;
  */
 /* Type tags used only by _Generic; they overlay data and are never read. */
 // clang-format off
@@ -314,7 +314,7 @@ typedef struct { unsigned char _; } FixedKind;
  *
  *   fints b = {0};
  *   SliceFixed(arena, &b, 16);
- *   *Push(&b) = 42;
+ *   *TryPush(&b) = 42;
  */
 #define FixedSlice(T) \
   union {             \
@@ -403,47 +403,45 @@ typedef struct { unsigned char _; } FixedKind;
 /**
  * Append an element and return it.
  *
- * `Push(&b)` is the fixed-capacity form: `FixedSlice` only, never grows, and
- * returns `NULL` when full. `Push(arena, s)` is the movable form: it grows only
+ * `TryPush(&b)` is the fixed-capacity form: `FixedSlice` only, never grows, and
+ * returns `NULL` when full. `TryPush(arena, s)` is the movable form: it grows only
  * when the backing ends at the arena tip (or the slice is empty), where capacity
  * is bumped in place and nothing moves; off-tip it returns `NULL` when full.
- * `PushGrow(arena, s)` grows off-tip too and may relocate.
+ * `Push(arena, s)` grows off-tip too and may relocate.
  *
  * The slot is uninitialized: caller must write `*slot` before reading. Check
  * for `NULL`; ignoring it still appends an uninitialized element when there is
  * room. A held slot dies at the next growing call, so reacquire it after
- * `Push(arena, s)`, `PushGrow`, `Reserve`, or `Clone`.
+ * `TryPush(arena, s)`, `Push`, `Reserve`, or `Clone`.
  *
- *   if (int *p = Push(&b)) *p = 42;       // FixedSlice only
- *   if (int *p = Push(arena, s)) *p = 42; // movable; grows only at the tip
- *   *PushGrow(arena, s) = 42;             // always grows
+ *   if (int *p = TryPush(&b)) *p = 42;       // FixedSlice only
+ *   if (int *p = TryPush(arena, s)) *p = 42; // movable; grows only at the tip
+ *   *Push(arena, s) = 42;                   // always grows
  */
-#define Push(...)               _PushX(__VA_ARGS__, _Push3, _Push2, _Push1)(__VA_ARGS__)
-#define _PushX(a, b, c, d, ...) d
-
-#define _Push3(a, b, c) _Static_assert(0, "Push takes a slice, or an arena and a slice")
+#define TryPush(...)            _TryPushX(__VA_ARGS__, _TryPush2, _TryPush1)(__VA_ARGS__)
+#define _TryPushX(a, b, c, ...) c
 
 ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
   return ok;
 }
 
 /* Fixed-capacity append. Returns `NULL` when full. Always bind or test the result. */
-#define _Push1(slice)                                                                       \
-  ({                                                                                        \
-    __auto_type _b = (slice);                                                               \
-    _SliceAssertStatic(_b);                                                                 \
-    _SliceAssertRuntimeDebug(_b);                                                           \
-    _Static_assert(_Generic(_b->_kind, FixedKind: 1, default: 0),                           \
-                   "Push(&b) requires a FixedSlice value; use Push(arena, s) or PushGrow"); \
-    __typeof__(*_b->data)* _slot = NULL;                                                    \
-    if (_b->len < _b->cap)                                                                  \
-      _slot = &_b->data[_b->len++];                                                         \
-    _slot;                                                                                  \
+#define _TryPush1(slice)                                                                      \
+  ({                                                                                          \
+    __auto_type _b = (slice);                                                                 \
+    _SliceAssertStatic(_b);                                                                   \
+    _SliceAssertRuntimeDebug(_b);                                                             \
+    _Static_assert(_Generic(_b->_kind, FixedKind: 1, default: 0),                             \
+                   "TryPush(&b) requires a FixedSlice value; use TryPush(arena, s) or Push"); \
+    __typeof__(*_b->data)* _slot = NULL;                                                      \
+    if (_b->len < _b->cap)                                                                    \
+      _slot = &_b->data[_b->len++];                                                           \
+    _slot;                                                                                    \
   })
 
 /* Movable append. Grows only at the tip, never relocates. Returns `NULL` when full and off-tip. Always bind
  * or test the result. */
-#define _Push2(arena, slice)                                                                     \
+#define _TryPush2(arena, slice)                                                                  \
   ({                                                                                             \
     __auto_type _a = (arena);                                                                    \
     __auto_type _b = (slice);                                                                    \
@@ -458,7 +456,7 @@ ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
   })
 
 /* Movable append. Grows as needed; may relocate. */
-#define PushGrow(arena, slice)                                                                   \
+#define Push(arena, slice)                                                                       \
   ({                                                                                             \
     __auto_type _b = (slice);                                                                    \
     _SliceAssertStatic(_b);                                                                      \
@@ -556,12 +554,12 @@ ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
  *
  *   if (SliceAtTip(arena, s)) Reserve(arena, s, s->cap + 16);
  */
-#define SliceAtTip(arena, slice)                                                             \
-  ({                                                                                         \
-    __auto_type _sat_arena = (arena);                                                        \
-    __auto_type _sat_slice = (slice);                                                        \
-    _SliceAssertStatic(_sat_slice);                                                          \
-    _sat_slice->cap == 0 ||                                                                  \
+#define SliceAtTip(arena, slice)                                                                 \
+  ({                                                                                             \
+    __auto_type _sat_arena = (arena);                                                            \
+    __auto_type _sat_slice = (slice);                                                            \
+    _SliceAssertStatic(_sat_slice);                                                              \
+    _sat_slice->cap == 0 ||                                                                      \
         _arena_at_tip(_sat_arena, _sat_slice->data, sizeof(*_sat_slice->data), _sat_slice->cap); \
   })
 

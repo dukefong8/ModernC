@@ -8,18 +8,18 @@ int use(Arena* arena) {
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
 
-  int* a = Push(arena, s);
+  int* a = TryPush(arena, s);
   *a = 1;
-  int* b = Push(arena, s);
+  int* b = TryPush(arena, s);
   *b = 2;
 
   fints f = {0};
   SliceFixed(arena, &f, 2);
-  int* c = Push(&f);
+  int* c = TryPush(&f);
   *c = 3;
-  int* d = Push(&f);
+  int* d = TryPush(&f);
   *d = 4;
-  int* full = Push(&f);  // compiles; NULL at runtime
+  int* full = TryPush(&f);  // compiles; NULL at runtime
   (void)full;
 
   return (int)(s->len + f.len);

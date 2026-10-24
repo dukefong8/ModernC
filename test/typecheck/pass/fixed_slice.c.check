@@ -1,4 +1,4 @@
-// FixedSlice(T) is a plain fixed-capacity descriptor: Push(&b) only.
+// FixedSlice(T) is a plain fixed-capacity descriptor: TryPush(&b) only.
 #include "arena.h"
 
 typedef Slice(int) ints;
@@ -13,13 +13,13 @@ _Static_assert(offsetof(fints, cap) == offsetof(SliceInternal, cap), "cap");
 int use(Arena* arena) {
   fints b = {0};
   SliceFixed(arena, &b, 8);
-  int* i0 = Push(&b);
+  int* i0 = TryPush(&b);
   *i0 = 1;
-  int* i1 = Push(&b);
+  int* i1 = TryPush(&b);
   *i1 = 2;
   (void)i0;
   (void)i1;
-  *Push(&b) = 3;
+  *TryPush(&b) = 3;
 
   ints* cloned = New(arena, ints);
   Clone(arena, cloned, &b);

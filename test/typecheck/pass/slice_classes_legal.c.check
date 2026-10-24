@@ -12,14 +12,14 @@ int use(Arena* arena) {
   ints* movable = New(arena, ints);
   Clone(arena, movable, fixed);
   Reserve(arena, fixed, 8);
-  *PushGrow(arena, fixed) = 10;
+  *Push(arena, fixed) = 10;
 
   /* fixed */
   fints b = {0};
   SliceFixed(arena, &b, 4);
-  int* i0 = Push(&b);
+  int* i0 = TryPush(&b);
   *i0 = 1;
-  int* i1 = Push(&b);
+  int* i1 = TryPush(&b);
   *i1 = 2;
   (void)i0;
   (void)i1;

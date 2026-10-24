@@ -1,9 +1,9 @@
 // EXPECT: discards qualifiers|read-only
-// PushGrow rejects a const element type: the zeroed slot cannot be written.
+// Push rejects a const element type: the zeroed slot cannot be written.
 #include "arena.h"
 
 typedef Slice(const int) cints;
 
 void use(Arena* arena, cints *s) {
-  *PushGrow(arena, s) = 1;
+  *Push(arena, s) = 1;
 }

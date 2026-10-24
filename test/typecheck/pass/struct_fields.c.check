@@ -14,21 +14,21 @@ struct Record {
 static fints build_fixed(Arena* arena) {
   fints b = {0};
   SliceFixed(arena, &b, 4);
-  *Push(&b) = 1;
+  *TryPush(&b) = 1;
   return b;
 }
 
 int use(Arena* arena, fints view) {
-  *Push(&view) = 2;  // mutates the local by-value descriptor only
+  *TryPush(&view) = 2;  // mutates the local by-value descriptor only
 
   struct Record* r = New(arena, struct Record);
-  *PushGrow(arena, &r->items) = 3;
+  *Push(arena, &r->items) = 3;
 
   r->extra = New(arena, ints);
-  *PushGrow(arena, r->extra) = 4;
+  *Push(arena, r->extra) = 4;
 
   r->fixed = build_fixed(arena);  // fixed descriptor stored by value
-  *Push(&r->fixed) = 5;
+  *TryPush(&r->fixed) = 5;
 
   bool movable_tip = SliceAtTip(arena, &r->items);
   bool fixed_tip = SliceAtTip(arena, &r->fixed);

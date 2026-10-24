@@ -9,12 +9,12 @@ typedef Slice(const char*) strs;
 typedef Slice(long long) llongs;
 
 void use(Arena* arena, points *ps, uints *us, strs *ss, llongs *ls) {
-  *PushGrow(arena, ps) = (struct Point){1, 2};
-  *PushGrow(arena, us) = 3u;
-  *PushGrow(arena, ls) = 4ll;
+  *Push(arena, ps) = (struct Point){1, 2};
+  *Push(arena, us) = 3u;
+  *Push(arena, ls) = 4ll;
 
   const char* hello = "hello";
-  *PushGrow(arena, ss) = hello;
-  *PushGrow(arena, us) = 5u;
+  *Push(arena, ss) = hello;
+  *Push(arena, us) = 5u;
   ps->data[0].x = 1;
 }
