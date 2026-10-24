@@ -1,6 +1,12 @@
 #include "arena.h"
 #include "utest.h"
 
+#if defined(__unix__) || defined(__APPLE__) || defined(__COSMOPOLITAN__)
+#include <sys/wait.h>
+#include <unistd.h>
+#define SLICE_HAVE_FORK 1
+#endif
+
 /* --- Slice: Push / Clone --- */
 
 typedef Slice(int) ints;
@@ -958,6 +964,71 @@ UTEST(slice, at_tip_empty_reserve_pattern) {
   m->len += 10;
   ASSERT_EQ(m->len, 10);
   ASSERT_EQ(At(m, 9), 18);
+}
+
+/* --- Slice: Ix (inverse of At) --- */
+
+UTEST(slice, ix_round_trips_with_at) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* m = New(arena, ints);
+  for (int i = 0; i < 10; i++)
+    *Push(arena, m) = i * 10;
+
+  // Every element address maps back to its index, and back to itself.
+  for (isize i = 0; i < m->len; i++) {
+    ASSERT_EQ(Ix(m, &m->data[i]), i);
+    ASSERT_EQ(&At(m, Ix(m, &m->data[i])), &m->data[i]);
+  }
+
+  // The index survives relocation while the pointer does not: capture the
+  // index, force an off-tip move, and resolve it again.
+  int* before = &m->data[7];
+  isize idx = Ix(m, before);
+  New(arena, char);  // m is off-tip
+  while (m->len < m->cap)
+    *Push(arena, m) = 0;
+  *Push(arena, m) = 99;  // full and off-tip: relocates
+  ASSERT_EQ(idx, 7);
+  ASSERT_EQ(At(m, idx), 70);
+
+  // Fixed slices work too.
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
+  for (int i = 0; i < 4; i++)
+    *TryPush(&b) = i + 1;
+  ASSERT_EQ(Ix(&b, &b.data[0]), 0);
+  ASSERT_EQ(Ix(&b, &b.data[3]), 3);
+}
+
+UTEST(slice, ix_out_of_bounds_traps) {
+#if defined(SLICE_HAVE_FORK)
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* m = New(arena, ints);
+  for (int i = 0; i < 4; i++)
+    *Push(arena, m) = i;
+
+  // Run the failing lookup in a child: Assert traps, so the parent can only
+  // observe the signal. One-past-end must not be mistaken for an element.
+  pid_t pid = fork();
+  ASSERT_NE(pid, (pid_t)-1);
+  if (pid == 0) {
+    (void)freopen("/dev/null", "w", stderr);  // keep the assertion log quiet
+    (void)Ix(m, &m->data[m->len]);
+    _exit(0);  // reached only if the bounds check failed to trap
+  }
+
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  ASSERT_TRUE(WIFSIGNALED(status));
+#else
+  UTEST_SKIP("fork is unavailable on this platform");
+#endif
 }
 
 /* --- Slice: Pop (structural shrink) --- */

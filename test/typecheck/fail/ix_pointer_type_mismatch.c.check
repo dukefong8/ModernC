@@ -1,0 +1,9 @@
+// EXPECT: slice element pointer type does not match
+// Ix requires the pointer type to match the slice element type.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+isize use(ints *s, long *p) {
+  return Ix(s, p);
+}

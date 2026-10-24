@@ -86,6 +86,8 @@ offsets, and alignment match `SliceInternal`.
   `Push(arena, s)` always grows and may relocate (uninitialized slot).
   `Reserve(arena, s, n)` may relocate too.
 - `At(s, i)` — bounds-checked element access, an lvalue valid across moves.
+- `Ix(s, ptr)` — inverse of `At`: index of the element `*ptr` in the slice,
+  traps when `ptr` is outside `len`.
 - `Clone(arena, out, src[, start[, len]])` — destination-only copy;
   works on either slice class.
 - `Pop(s, &out)` — last element into `*out`, false when empty (nodiscard).

@@ -98,7 +98,7 @@
 #endif
 
 #ifndef NDEBUG
-#define ASSERT_LOG(c) fprintf(stderr, "Assertion failed: " c " at %s %s:%d\n", __func__, __FILE__, __LINE__)
+#define ASSERT_LOG(c) fprintf(stderr, "Assertion failed: %s at %s %s:%d\n", c, __func__, __FILE__, __LINE__)
 #else
 #define ASSERT_LOG(c) (void)0
 #endif
@@ -502,6 +502,33 @@ ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
     Assert(_at_i >= 0 && _at_i < _at_s->len && "At: index out of bounds"); \
     &_at_s->data[_at_i];                                                   \
   }))
+
+/**
+ * Index of the element `*ptr` in the slice: the inverse of `At`.
+ * `At(s, Ix(s, p))` is `*p`. Traps when `ptr` does not point at an element
+ * within `len` (not just `cap`), like `At` traps out of bounds. Accepts both
+ * `Slice` and `FixedSlice`; the pointer type must match the element type.
+ *
+ * Like `At`, indices stay valid across growth; prefer them over a held
+ * pointer. Each argument is evaluated once.
+ *
+ *   int *p = &At(s, 2);
+ *   isize i = Ix(s, p); // == 2
+ */
+#define Ix(s, ptr)                                                                                  \
+  ({                                                                                                \
+    __auto_type _ix_s = (s);                                                                        \
+    __auto_type _ix_p = (ptr);                                                                      \
+    _SliceAssertStatic(_ix_s);                                                                      \
+    _SliceAssertRuntimeDebug(_ix_s);                                                                \
+    _Static_assert(__builtin_types_compatible_p(__typeof__(_ix_s->data), __typeof__(_ix_p)),        \
+                   "slice element pointer type does not match");                                    \
+    _Static_assert(sizeof(*_ix_s->data) > 0, "slice elements must not be zero-size");               \
+    uintptr_t _ix_diff = (uintptr_t)_ix_p - (uintptr_t)_ix_s->data;                                 \
+    Assert(_ix_s->len > 0 && _ix_diff % sizeof(*_ix_s->data) == 0 &&                                \
+           _ix_diff / sizeof(*_ix_s->data) < (uintptr_t)_ix_s->len && "Ix: pointer out of bounds"); \
+    (isize)(_ix_diff / sizeof(*_ix_s->data));                                                       \
+  })
 
 /**
  * Ensure `cap >= min_cap` (no-op below `cap`). Movable only; may relocate.

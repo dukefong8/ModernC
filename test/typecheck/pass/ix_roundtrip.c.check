@@ -1,0 +1,11 @@
+// Ix is the inverse of At for movable and fixed slices.
+#include "arena.h"
+
+typedef Slice(int) ints;
+typedef FixedSlice(int) fints;
+
+isize use(ints* s, fints* b) {
+  isize i = Ix(s, &At(s, 0));
+  isize j = Ix(b, &b->data[0]);
+  return i + j;
+}
