@@ -1,0 +1,7 @@
+// EXPECT: unused-result|ignoring return value
+// astr_concat builds a new string; discarding it must fail.
+#include "arena.h"
+
+void use(Arena *arena, astr head, astr tail) {
+  astr_concat(arena, head, tail);
+}

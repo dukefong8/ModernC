@@ -293,6 +293,7 @@ UTEST(slice, class_movable_to_fixed_rebuild) {
 
   fints b = {0};
   SliceFixed(arena, &b, g->len);
+  ASSERT_TRUE(b.data != NULL);
   for (isize i = 0; i < g->len; i++) {
     int* slot = TryPush(&b);
     ASSERT_EQ(slot, &b.data[i]);
@@ -530,8 +531,11 @@ UTEST(slice, push_arena_form_grows_at_tip) {
 
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
-  for (int i = 0; i < 4; i++)
-    *TryPush(arena, s) = i;
+  for (int i = 0; i < 4; i++) {
+    int* slot = TryPush(arena, s);
+    ASSERT_TRUE(slot != NULL);
+    *slot = i;
+  }
   ASSERT_EQ(s->len, 4);
   ASSERT_EQ(s->cap, 4);
 
@@ -573,8 +577,11 @@ UTEST(slice, push_arena_form_off_tip_full_returns_null) {
 
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
-  for (int i = 0; i < 4; i++)
-    *TryPush(arena, s) = i;
+  for (int i = 0; i < 4; i++) {
+    int* slot = TryPush(arena, s);
+    ASSERT_TRUE(slot != NULL);
+    *slot = i;
+  }
 
   New(arena, char);  // move the slice off the arena tip
   int* base = s->data;
@@ -597,7 +604,9 @@ UTEST(slice, push_arena_form_uses_spare_capacity_off_tip) {
 
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
-  *TryPush(arena, s) = 1;
+  int* head = TryPush(arena, s);
+  ASSERT_TRUE(head != NULL);
+  *head = 1;
   New(arena, char);  // off-tip, but the slice has spare capacity
 
   int* base = s->data;
@@ -680,7 +689,7 @@ UTEST(slice, fixed_push_unchecked) {
   SliceFixed(arena, &b, 4);
 
   int* pslot = TryPush(&b);
-  Assert(pslot != NULL);
+  ASSERT_TRUE(pslot != NULL);
   *pslot = 7;
   ASSERT_EQ(b.data[0], 7);
   ASSERT_EQ(b.len, 1);
@@ -723,7 +732,10 @@ static fints fixed_build(Arena* arena, isize cap, isize len) {
   SliceFixed(arena, &b, cap);
   for (isize i = 0; i < len; i++) {
     int* slot = TryPush(&b);
-    Assert(slot != NULL);
+    if (!slot) {
+      Assert(false && "fixed_build: len exceeds cap");
+      return b;
+    }
     *slot = (int)(i * 10);
   }
   return b;
@@ -1302,6 +1314,92 @@ UTEST(slice, pop_empty_is_safe) {
   ASSERT_EQ(b.cap, 4);
 }
 
+/* --- Slice: ignored results (what nodiscard does and does not catch) ---
+ *
+ * Pop carries warn_unused_result (via _PopOk), so a bare Pop fails under
+ * -Werror (see test/typecheck/fail/pop_ignored.c.check). The (void) casts
+ * below stand in for callers who never checked: they silence the warning
+ * the way an explicit acknowledgment would. TryPush/Push return a typed
+ * slot through a statement expression, which cannot carry the attribute,
+ * so their discards compile silently — the tests below pin the resulting
+ * behavior (see test/typecheck/pass/trypush_ignored_compiles.c.check). */
+
+UTEST(slice, nodiscard_pop_empty_keeps_stale_out) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+  int top = 123;
+  ASSERT_FALSE(Pop(s, &top));  // checked form: empty, *out untouched
+  ASSERT_EQ(top, 123);
+
+  int stale = 456;
+  bool popped = Pop(s, &stale);  // discarded check: no pop, stale kept
+  ASSERT_FALSE(popped);
+  ASSERT_EQ(stale, 456);
+  ASSERT_EQ(s->len, 0);
+}
+
+UTEST(slice, nodiscard_trypush_full_silently_skips) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  fints b = {0};
+  SliceFixed(arena, &b, 1);
+  int* slot = TryPush(&b);
+  ASSERT_TRUE(slot != NULL);
+  *slot = 7;
+
+  (void)TryPush(&b);  // full: NULL, no append — silent without a check
+  ASSERT_EQ(b.len, 1);
+  ASSERT_EQ(b.data[0], 7);
+}
+
+UTEST(slice, nodiscard_trypush_ignored_still_appends) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
+  (void)TryPush(&b);  // room: appends an uninitialized element anyway
+  ASSERT_EQ(b.len, 1);
+}
+
+UTEST(slice, nodiscard_trypush_arena_offtip_full_silently_skips) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+  Reserve(arena, s, 2);
+  int* a = TryPush(arena, s);
+  ASSERT_TRUE(a != NULL);
+  *a = 1;
+  int* c = TryPush(arena, s);
+  ASSERT_TRUE(c != NULL);
+  *c = 2;
+
+  New(arena, char);         // off tip, full
+  (void)TryPush(arena, s);  // NULL: no append, no move — silent
+  ASSERT_EQ(s->len, 2);
+  ASSERT_EQ(s->data[1], 2);
+}
+
+UTEST(slice, nodiscard_push_ignored_still_appends) {
+  // Push always succeeds, so there is nothing to check — but the slot is
+  // uninitialized. Ignoring the result still appends it.
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+  (void)Push(arena, s);
+  ASSERT_EQ(s->len, 1);
+}
+
 UTEST(slice, clone_full) {
   enum { size = KB(4) };
   byte mem[size] = {0};
@@ -1371,9 +1469,9 @@ UTEST(slice, push_unchecked_fills_reserved) {
   byte* cur = arena->cur;
 
   for (int i = 0; i < 200; i++) {
-    int* pslot = TryPush(arena, s);
-    Assert(pslot != NULL);
-    *pslot = i * 2;
+    int* slot = TryPush(arena, s);
+    ASSERT_TRUE(slot != NULL);
+    *slot = i * 2;
   }
 
   ASSERT_EQ(s->len, 200);
@@ -1389,8 +1487,12 @@ UTEST(slice, push_unchecked_shares_state_with_push) {
 
   ints* s = New(arena, ints);
   Reserve(arena, s, 4);
-  *TryPush(arena, s) = 1;
-  *TryPush(arena, s) = 2;
+  int* a1 = TryPush(arena, s);
+  ASSERT_TRUE(a1 != NULL);
+  *a1 = 1;
+  int* a2 = TryPush(arena, s);
+  ASSERT_TRUE(a2 != NULL);
+  *a2 = 2;
 
   // Checked Push sees the unchecked len and grows past the reserved room.
   *Push(arena, s) = 3;
@@ -1399,7 +1501,9 @@ UTEST(slice, push_unchecked_shares_state_with_push) {
   ASSERT_EQ(s->len, 5);
 
   // The slice now has fresh room again: fill it unchecked.
-  *TryPush(arena, s) = 6;
+  int* a6 = TryPush(arena, s);
+  ASSERT_TRUE(a6 != NULL);
+  *a6 = 6;
   ASSERT_EQ(s->len, 6);
   for (int i = 0; i < 6; i++)
     ASSERT_EQ(s->data[i], i + 1);
@@ -1420,9 +1524,9 @@ UTEST(slice, push_unchecked_top_up_partially_filled) {
   byte* cur = arena->cur;
 
   for (int i = 0; i < 100; i++) {
-    int* pslot = TryPush(arena, s);
-    Assert(pslot != NULL);
-    *pslot = i;
+    int* slot = TryPush(arena, s);
+    ASSERT_TRUE(slot != NULL);
+    *slot = i;
   }
 
   ASSERT_EQ(s->len, 103);

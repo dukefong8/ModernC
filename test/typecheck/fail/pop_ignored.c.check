@@ -1,0 +1,11 @@
+// EXPECT: unused-result|ignoring return value
+// Pop reports empty via its return, so discarding it must fail: _PopOk
+// carries warn_unused_result.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+void use(ints *s) {
+  int top = 0;
+  Pop(s, &top);
+}

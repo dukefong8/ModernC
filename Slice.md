@@ -331,7 +331,7 @@ map as follows:
 Harness: `make typecheck` / `test/typecheck.sh`. Pass fixtures must compile
 with `-Werror`; fail fixtures must fail for the expected reason.
 
-Current result: **14 compiled, 23 rejected**.
+Current result: **15 compiled, 27 rejected**.
 
 ### Pass fixtures (15)
 
@@ -379,7 +379,7 @@ destination element type at compile time.
 
 ## 4. Runtime coverage
 
-Current result: **150 tests passed**, 0 build warnings.
+Current result: **156 tests passed**, 0 build warnings.
 
 Slice tests live in `src/slice_tests.c` (`slice.*`), with `cspan` fixtures
 using arena-owned descriptors, plus 3 in `main.c`; the rest cover `astr`,
@@ -617,10 +617,10 @@ CC='clang -std=c23' ./test/typecheck.sh
 Last recorded results:
 
 ```text
-runtime suite:                  150 tests passed
-make typecheck:                 14 compiled, 23 rejected
-CC=clang -std=c23 typecheck:    14 compiled, 23 rejected
-CC=cosmocc -mcosmo typecheck:   14 compiled, 23 rejected
+runtime suite:                  156 tests passed
+make typecheck:                 15 compiled, 27 rejected
+CC=clang -std=c23 typecheck:    15 compiled, 27 rejected
+CC=cosmocc -mcosmo typecheck:   15 compiled, 27 rejected
 build warnings:                 0
 ```
 

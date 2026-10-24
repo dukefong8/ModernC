@@ -1,0 +1,7 @@
+// EXPECT: unused-result|ignoring return value
+// astr_cstrdup mallocs; discarding it leaks.
+#include "arena.h"
+
+void use(astr s) {
+  astr_cstrdup(s);
+}

@@ -1,0 +1,7 @@
+// EXPECT: unused-result|ignoring return value
+// astr_trim returns the trimmed view; calling it for effect is a no-op bug.
+#include "arena.h"
+
+void use(astr s) {
+  astr_trim(s);
+}

@@ -1,0 +1,15 @@
+// TryPush returns a typed slot through a statement expression, which cannot
+// carry warn_unused_result — so discarding the result compiles. This is a
+// known gap, not an endorsement: always bind or test the slot. If TryPush
+// ever gains nodiscard, this fixture must start failing.
+#include "arena.h"
+
+typedef Slice(int) ints;
+typedef FixedSlice(int) fints;
+
+void use(Arena *arena, ints *s) {
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
+  TryPush(&b);
+  TryPush(arena, s);
+}

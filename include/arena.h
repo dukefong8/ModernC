@@ -228,7 +228,7 @@ static void autofree_impl(void* p) {
 #define _NEW2(a, t)               (t*)arena_alloc(a, sizeof(t), alignof(t), 1, (ArenaFlag){0})
 #define _NEW3(a, t, n)            (t*)arena_alloc(a, sizeof(t), alignof(t), n, (ArenaFlag){0})
 #define _NEW4(a, t, n, z) \
-  (t*)_Generic((z), t *: arena_alloc_init, ArenaFlag: arena_alloc)(a, sizeof(t), alignof(t), n, (z))
+  (t*)_Generic((z), t*: arena_alloc_init, ArenaFlag: arena_alloc)(a, sizeof(t), alignof(t), n, (z))
 
 #define CONCAT_(a, b) a##b
 #define CONCAT(a, b)  CONCAT_(a, b)
@@ -421,10 +421,6 @@ typedef struct { unsigned char _; } FixedKind;
 #define TryPush(...)            _TryPushX(__VA_ARGS__, _TryPush2, _TryPush1)(__VA_ARGS__)
 #define _TryPushX(a, b, c, ...) c
 
-ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
-  return ok;
-}
-
 /* Fixed-capacity append. Returns `NULL` when full. Always bind or test the result. */
 #define _TryPush1(slice)                                                                      \
   ({                                                                                          \
@@ -486,6 +482,10 @@ ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
       *_o = _s->data[--_s->len];  \
     _popped;                      \
   }))
+
+ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
+  return ok;
+}
 
 /**
  * Bounds-checked `s->data[i]` as an lvalue. Valid across growth; prefer over
@@ -833,12 +833,6 @@ ARENA_INLINE void arena_slice_reserve(Arena* arena, void* slice, isize size, isi
   memcpy(&tmp, slice, sizeof(tmp));
 
   Assert(min_cap >= 0 && "reserve size must be non-negative");
-  Assert(size > 0 && "element size must be positive");
-  Assert(align > 0 && IsPow2(align) && "element alignment must be a power of two");
-  Assert(tmp.len >= 0 && tmp.len <= tmp.cap && "invalid slice state");
-  Assert((tmp.data != NULL || tmp.len == 0) && "empty slices only may leave data NULL");
-  Assert((tmp.data == NULL || ((uintptr_t)tmp.data & ((uintptr_t)align - 1)) == 0) &&
-         "slice data must be aligned for its element type");
 
   if (tmp.cap >= min_cap)
     return;
@@ -957,7 +951,7 @@ ARENA_INLINE bool _astr_at_tip(const Arena* arena, astr s) {
  * @param s String to clone.
  * @return New astr with copied data; no-op when empty or already at the tip.
  */
-ARENA_INLINE astr astr_clone(Arena* arena, astr s) {
+ARENA_NODISCARD ARENA_INLINE astr astr_clone(Arena* arena, astr s) {
   if (s.len == 0 || _astr_at_tip(arena, s))
     return s;
 
@@ -977,7 +971,7 @@ ARENA_INLINE astr astr_clone(Arena* arena, astr s) {
  * Extends in place when `tail` already sits right after `head` at the tip,
  * otherwise clones as needed.
  */
-ARENA_INLINE astr astr_concat(Arena* arena, astr head, astr tail) {
+ARENA_NODISCARD ARENA_INLINE astr astr_concat(Arena* arena, astr head, astr tail) {
   if (head.len == 0) {
     return tail.len > 0 && _astr_at_tip(arena, tail) ? tail : astr_clone(arena, tail);
   }
@@ -1008,7 +1002,7 @@ ARENA_INLINE astr astr_concat(Arena* arena, astr head, astr tail) {
  * @param nbytes Number of bytes
  * @return Arena-allocated astr
  */
-ARENA_INLINE astr astr_from_bytes(Arena* arena, const void* bytes, size_t nbytes) {
+ARENA_NODISCARD ARENA_INLINE astr astr_from_bytes(Arena* arena, const void* bytes, size_t nbytes) {
   return astr_clone(arena, (astr){(char*)bytes, nbytes});
 }
 
@@ -1018,7 +1012,7 @@ ARENA_INLINE astr astr_from_bytes(Arena* arena, const void* bytes, size_t nbytes
  * @param str Null-terminated string
  * @return Arena-allocated astr
  */
-ARENA_INLINE astr astr_from_cstr(Arena* arena, const char* str) {
+ARENA_NODISCARD ARENA_INLINE astr astr_from_cstr(Arena* arena, const char* str) {
   return astr_from_bytes(arena, str, strlen(str));
 }
 
@@ -1030,7 +1024,7 @@ ARENA_INLINE astr astr_from_cstr(Arena* arena, const char* str) {
  * @param nbytes Number of bytes
  * @return Concatenated astr
  */
-ARENA_INLINE astr astr_cat_bytes(Arena* arena, astr head, const void* bytes, size_t nbytes) {
+ARENA_NODISCARD ARENA_INLINE astr astr_cat_bytes(Arena* arena, astr head, const void* bytes, size_t nbytes) {
   return astr_concat(arena, head, (astr){(char*)bytes, nbytes});
 }
 
@@ -1041,7 +1035,7 @@ ARENA_INLINE astr astr_cat_bytes(Arena* arena, astr head, const void* bytes, siz
  * @param str C string to append
  * @return Concatenated astr
  */
-ARENA_INLINE astr astr_cat_cstr(Arena* arena, astr head, const char* str) {
+ARENA_NODISCARD ARENA_INLINE astr astr_cat_cstr(Arena* arena, astr head, const char* str) {
   return astr_cat_bytes(arena, head, str, strlen(str));
 }
 
@@ -1055,7 +1049,7 @@ ARENA_INLINE astr astr_cat_cstr(Arena* arena, astr head, const char* str) {
  * Usage:
  *   astr s1 = astr_format(arena, "%.10f, $%d, %.*s", 3.1415926, 42, S(s));
  */
-static astr astr_format(Arena* arena, const char* format, ...) {
+ARENA_NODISCARD static astr astr_format(Arena* arena, const char* format, ...) {
   enum { STACK_BUF = 256 };
   char buf[STACK_BUF];
 
@@ -1093,7 +1087,7 @@ static astr astr_format(Arena* arena, const char* format, ...) {
  * Usage:
  *   printf("test: %s\n", astr_to_cstr(*arena, s));
  */
-ARENA_INLINE const char* astr_to_cstr(Arena arena, astr s) {
+ARENA_NODISCARD ARENA_INLINE const char* astr_to_cstr(Arena arena, astr s) {
   return astr_concat(&arena, s, astr("\0")).data;
 }
 
@@ -1108,7 +1102,7 @@ ARENA_INLINE const char* astr_to_cstr(Arena arena, astr s) {
  *     // modify cs...
  *   }
  */
-ARENA_INLINE char* astr_cstrdup(astr s) {
+ARENA_NODISCARD ARENA_INLINE char* astr_cstrdup(astr s) {
   return strndup(s.data, s.len);
 }
 
@@ -1338,7 +1332,7 @@ ARENA_INLINE isize astr_find(astr s, astr needle) {
  * @param len Length (clamped to string bounds)
  * @return Substring view (no allocation)
  */
-ARENA_INLINE astr astr_substr(astr s, isize pos, isize len) {
+ARENA_NODISCARD ARENA_INLINE astr astr_substr(astr s, isize pos, isize len) {
   Assert(((size_t)pos <= (size_t)s.len) & (len >= 0));
   if (len > s.len - pos)
     len = s.len - pos;
@@ -1353,7 +1347,7 @@ ARENA_INLINE astr astr_substr(astr s, isize pos, isize len) {
  * @param p2 End position (exclusive, clamped to string length)
  * @return Substring view (no allocation)
  */
-ARENA_INLINE astr astr_slice(astr s, isize p1, isize p2) {
+ARENA_NODISCARD ARENA_INLINE astr astr_slice(astr s, isize p1, isize p2) {
   Assert(((size_t)p1 <= (size_t)p2) & ((size_t)p1 <= (size_t)s.len));
   if (p2 > s.len)
     p2 = s.len;
@@ -1366,7 +1360,7 @@ ARENA_INLINE astr astr_slice(astr s, isize p1, isize p2) {
  * @param s String to trim
  * @return View of string without leading whitespace
  */
-ARENA_INLINE astr astr_trim_left(astr s) {
+ARENA_NODISCARD ARENA_INLINE astr astr_trim_left(astr s) {
   while (s.len && (unsigned char)*s.data <= ' ')
     ++s.data, --s.len;
   return s;
@@ -1377,7 +1371,7 @@ ARENA_INLINE astr astr_trim_left(astr s) {
  * @param s String to trim
  * @return View of string without trailing whitespace
  */
-ARENA_INLINE astr astr_trim_right(astr s) {
+ARENA_NODISCARD ARENA_INLINE astr astr_trim_right(astr s) {
   while (s.len && (unsigned char)s.data[s.len - 1] <= ' ')
     --s.len;
   return s;
@@ -1388,7 +1382,7 @@ ARENA_INLINE astr astr_trim_right(astr s) {
  * @param sv String to trim
  * @return View of trimmed string
  */
-ARENA_INLINE astr astr_trim(astr sv) {
+ARENA_NODISCARD ARENA_INLINE astr astr_trim(astr sv) {
   return astr_trim_right(astr_trim_left(sv));
 }
 
