@@ -77,9 +77,10 @@ offsets, and alignment match `SliceInternal`.
 - `SliceFromArray(arena, dst, a)` — copy into
   arena storage (`cap == len`); source lifetime no longer matters.
 - `SliceFixed(arena, &b, cap)` — initialize the fixed class.
-- `TryPush(&b)` — fixed-capacity append; `FixedSlice` only, never allocates or
+- `TryPush(s)` — append without growing on either slice class; never allocates or
   relocates, and returns an uninitialized slot or `NULL` when full (caller must
-  write `*slot`). A movable `Slice` must use `TryPush(arena, s)` or `Push`.
+  write `*slot`). A full movable `Slice` needs `TryPush(arena, s)` or `Push`
+  to grow.
 - `TryPush(arena, s)` — movable class only; when full, extends capacity in place
   if the backing ends at the arena tip (nothing moves; an empty slice always
   qualifies) and returns `NULL` off-tip (uninitialized slot on success).
@@ -104,6 +105,57 @@ Write elements through the returned slot: `*Push(arena, s) = v;`.
 A slot is an element pointer, so it dies at the next growing call on that
 slice; indices and `At(s, i)` stay valid across moves.
 
+### Fill-loop performance
+
+Bulk fills live or die by whether the loop vectorizes, which is decided by
+descriptor placement — not by which macro spells the append:
+
+- **A. Stack-owned movable + `Reserve` + 1-arg `TryPush` loop** (~0.5 ms per
+  8M ints). The descriptor lives on the stack, so the compiler proves the
+  `data[i]` stores cannot alias the descriptor loads and emits NEON.
+  ```c
+  ints b = {0};
+  Reserve(arena, &b, N);
+  for (isize i = 0; i < N; i++) *TryPush(&b) = f(i);
+  ```
+- **B. Arena-owned movable: shuffle the descriptor through the stack**
+  (~0.6 ms). Looping directly over the arena-owned descriptor stays scalar
+  (~14 ms, ~29x slower): every store may alias the descriptor, so `len`/`data`
+  reload each iteration. Copy it to a stack temporary for the loop and write
+  back once — (A) speed with an arena-owned destination:
+  ```c
+  ints *s = New(arena, ints);
+  Reserve(arena, s, N);
+  ints t = *s;                 /* s stays stale mid-loop */
+  for (isize i = 0; i < N; i++) *TryPush(&t) = f(i);
+  *s = t;
+  ```
+
+Measured with clang `-O2` on Apple Silicon, N = 8M `int` (32 MB), 10 reps,
+checksums equal across both. Rule of thumb: own the descriptor on the
+stack for hot per-element loops (A); never loop directly over an
+arena-owned descriptor — shuffle it to the stack first (B).
+
+### Indexed-access performance
+
+The same descriptor-placement rule applies to `At`:
+
+- Read loops (`sum += At(s, i)`) vectorize and match `s->data[i]`; LLVM
+  proves `i < len` from the loop bound and removes the bounds check.
+- Write loops (`At(s, i) += 1`) do not vectorize through an arena-owned
+  descriptor: the store may alias `len`/`data`, so both reload every
+  iteration. Shuffle the descriptor to the stack exactly as in (B):
+  ```c
+  ints t = *s;
+  for (isize i = 0; i < t.len; i++) At(&t, i) += 1;
+  *s = t;
+  ```
+  On x86-64 (clang 23, 1M `int`, best of 300) this is ~0.21 ms versus
+  ~0.70 ms looping directly over `s`; the bounds check itself is not the
+  cost. `Pop` drains follow the same rule (~0.30 ms with a stack descriptor
+  versus ~0.51 ms direct), and reserved `TryPush` fills are at parity with
+  raw stores — descriptor placement is the lever, not the macro body.
+
 ### Storage and passing rubric
 
 Movable `Slice` is stored and passed by pointer. `FixedSlice` is stored and
@@ -123,20 +175,6 @@ passed by value; fixed operations take the address of that value.
 | Return by value | possible, but callers must not grow an older copy | supported and safe |
 | At-tip query | `SliceAtTip(arena, s)` is advisory: true only for an immediate in-place growth | same query works; fixed data never moves anyway |
 | Cost | arena descriptor + pointer indirection | inline descriptor, no allocation |
-
-Pros and cons:
-
-- **Movable by pointer** — Pros: one descriptor identity, so `len`/`cap` and
-  relocation stay coherent across callers; arena owns the descriptor.
-  Cons: an extra pointer; a value copy is a trap because `data` can relocate.
-  Tested by `movable_by_pointer_aliasing_and_relocation`,
-  `movable_descriptor_lifetime`, and `fixed_never_relocates_movable_does`.
-- **Fixed by value** — Pros: no descriptor allocation or indirection; can be
-  returned by value, embedded in records, and copied freely because the
-  backing block never moves. Cons: copies have independent `len`/`cap`, so
-  appending through one copy does not advance another; writes still alias.
-  Tested by `fixed_by_value_aliasing_and_mutation`,
-  `fixed_by_value_lifetime`, and `fixed_never_relocates_movable_does`.
 
 `Push`/`Reserve` dispatch on `_kind` with an inlined
 `_Static_assert(_Generic(_s->_kind, MovableKind: 1, default: 0), "expected a movable Slice")`:
@@ -189,7 +227,7 @@ type. "Layout" = size/offsets/alignment vs `SliceInternal`.
 | Operation | Compile-time | Runtime (always) | Debug only | Gap vs `T[..]` / `T[..k]` |
 |---|---|---|---|---|
 | `SliceFixed(arena, &b, cap)` | layout + tag; element size/alignment/stride | `cap >= 0`; reserve | slice-state check | capacity is runtime, not compile-time `k` |
-| `TryPush(&b)` | layout + tag (`FixedKind` required) | full → `NULL`, no append; never relocates | slice-state check | no `append`, `index_of`; single-element push only |
+| `TryPush(&b)` | layout (either class; never grows) | full → `NULL`, no append; never relocates | slice-state check | no `append`, `index_of`; single-element push only |
 | `Pop(&b, &out)` | layout (structural, no tag needed) | empty → `false`, `*out` untouched | slice-state check | no `pop_n`/`resize`/`clear`; no shrink-liveness proof |
 
 | `TryPush(arena, &b)` / `Push(arena, &b)` / `Reserve(arena, &b, n)` | **compile error** — inlined `_Static_assert` requires `MovableKind` | n/a | n/a | n/a (this *is* the enforcement) |
@@ -457,7 +495,7 @@ reference can be created and used without a diagnostic.
 | `SliceFixed(arena, &b, n)` on an already-initialized fixed value | Overwrites `b` and orphans its previous backing; old pointers and subslices into that backing become stale. | Capacity/alignment and element-stride checks. Not enforced: old data aliases. |
 | `Clone(arena, out, s)` | The source is not moved, but the clone is shallow: element-held pointers, slices, or self-relative references still refer to the source storage/lifetime. It also overwrites `out`, orphaning its previous backing. | Bounds/layout checks. Not enforced: relocatable/self-relative element types or arena lifetime. |
 | Explicit descriptor copies (`*dst = *src`, `memcpy`, struct copy) | Movable: a value copy pins the old block; a later growth through the original leaves the copy stale. Fixed: copies are valid views because the backing never relocates, but `len`/`cap` diverge. | None: descriptors are ordinary values, so copies compile and alias silently. Pass movable slices by pointer; fixed values may be copied. |
-| Hand-written descriptor with `data` over caller memory | No view constructor exists, but a structural `{data, len, cap}` literal still compiles for the structural ops (`Pop`/`Clone`). `TryPush(&b)` and `TryPush(arena, s)` require a known class tag. | Layout/type checks only. Not enforced: external-memory ownership, lifetime, or a later `Reserve` move. |
+| Hand-written descriptor with `data` over caller memory | No view constructor exists, but a structural `{data, len, cap}` literal still compiles for the structural ops (`Pop`/`Clone`, 1-arg `TryPush`). `TryPush(arena, s)` requires a known class tag. | Layout/type checks only. Not enforced: external-memory ownership, lifetime, or a later `Reserve` move. |
 | `Scratch` exit / `arena_reset` / `arena_release` / `arena_free` | All slice storage in the affected arena range becomes stale; bump memory may be reused by later allocations. | No slice-level check. ASAN may catch some freed memory, but not ordinary bump reuse. |
 | `Pop` followed by `TryPush` | The popped slot can be reused; an old pointer to it observes the new value or a later overwrite. | None; this is a logical lifetime rule. |
 
@@ -518,9 +556,10 @@ These are the areas a reviewer should not assume are covered.
    `_Generic` dispatch. Do not read/write it. Hand-written descriptors that
    want `Push`/`Reserve` must add a matching tag.
 
-7. **`TryPush` is class-split: fixed by value, movable with an arena.**
-   `TryPush(&b)` requires `FixedKind`; `TryPush(arena, s)` requires `MovableKind` and
-   grows only at the tip. `Push(arena, s)` is the relocating growth path.
+7. **`TryPush` is split by growth, not class.**
+   `TryPush(s)` never grows on either class and returns `NULL` when full;
+   `TryPush(arena, s)` requires `MovableKind` and grows only at the tip.
+   `Push(arena, s)` is the relocating growth path.
 
 
 9. **Metadata and limits.**
@@ -548,13 +587,14 @@ is present in release too (`Assert`); "debug" means `NDEBUG` removes it.
 | Array is a real, non-empty, constant-extent C array; element size nonzero; length/size fit `isize`; power-of-two alignment; stride multiple | `_Static_assert` in `_SliceAssertArray` | `SliceFromArray` |
 | Slot return type matches the element type | `__typeof__(*data) *` in `TryPush`/`Push` | all push forms; the store itself is an ordinary C assignment |
 | Element destination is writable / assignment is compatible | `memset` on the returned slot and the typed store in `Pop` (`*_o = ...`) | `TryPush`, `Push`, `Pop`, typed `SliceFromArray` |
-| Destination element type matches the copied array | `__builtin_types_compatible_p` in `SliceFromArray` | `SliceFromArray(arena, dst, array)` |
+| `Pop` output element type matches the slice | `_AssertTypesCompatible` in `Pop` | `Pop(s, &out)` |
+| Destination element type matches the copied array | `_AssertTypesCompatible` in `SliceFromArray` | `SliceFromArray(arena, dst, array)` |
 | Destination is a movable `Slice` | inlined `_Static_assert(_Generic(...))` in `SliceFromArray` | `SliceFromArray(arena, dst, array)` |
-| Clone destination element type matches source | `__builtin_types_compatible_p` in `_CloneDst`/`_CloneToEnd` | `Clone` |
+| Clone destination element type matches source | `_AssertTypesCompatible` in `_CloneDst` | `Clone` |
 | Element size, alignment, and stride valid | `_Static_assert` in `SliceFixed` | fixed value initialization |
 | Class dispatch: `MovableKind` required | inlined `_Static_assert(_Generic(...))` | wrong-class descriptors (incl. unknown hand-written tags) are compile errors on `TryPush(arena, s)`/`Push`/`Reserve` and `SliceFromArray` |
 | Operation argument is a pointer to the descriptor | member access through the macro body (`_s->data`, `_s->_kind`) | `TryPush`, `Push`, `Pop`, `Reserve`, `At`, `Clone`; passing the descriptor itself by value is rejected |
-| `TryPush(&b)` requires `FixedKind` | inlined `_Static_assert(_Generic(...))` | a movable `Slice` is a compile error |
+| `TryPush(s)` never grows, either class | layout check only (`_SliceAssertStatic`) | structurally layout-compatible descriptors (incl. unknown hand-written tags) compile, like `Pop`/`Clone` |
 | `TryPush(arena, s)`/`Push` require a movable `Slice` | inlined `_Static_assert(_Generic(...))` | `FixedSlice` is a compile error |
 
 ### Runtime checks
@@ -563,7 +603,7 @@ is present in release too (`Assert`); "debug" means `NDEBUG` removes it.
 |---|---|---|
 | Slice state: `len >= 0`, `len <= cap`, `data` present unless empty, data aligned | always | `arena_slice_reserve` (all growth paths end there) |
 | Slice state for the other operations | debug only | `_SliceAssertRuntimeDebug` in `TryPush`, `Push`, `Pop`, `Reserve` |
-| Capacity `len < cap`, full → `NULL`, no append | always | `TryPush(&b)` (fixed); `TryPush(arena, s)` (movable, at tip) |
+| Capacity `len < cap`, full → `NULL`, no append | always | `TryPush(s)` (either class, never grows); `TryPush(arena, s)` (movable, at tip) |
 | At-tip extension: only when `data + size*cap == arena->cur` | always | `_arena_at_tip` guard in `arena_slice_grow_at_tip`; no move |
 | Reserve arguments (`min_cap >= 0`, element size positive, alignment power-of-two) and valid slice state | always | `arena_slice_reserve` (called by every `Reserve` path) |
 | `Clone` source and range (`data` non-null unless empty, `start`/`len` bounds) | always | `_CloneDst` |

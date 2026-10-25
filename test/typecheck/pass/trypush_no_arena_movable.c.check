@@ -1,0 +1,18 @@
+// One-arg TryPush appends to a reserved movable Slice without an arena.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+int use(Arena* arena) {
+  ints* s = New(arena, ints);
+  Reserve(arena, s, 2);
+
+  int* a = TryPush(s);  // spare capacity: slot, no growth
+  *a = 1;
+  int* b = TryPush(s);
+  *b = 2;
+  int* full = TryPush(s);  // compiles; NULL at runtime
+  (void)full;
+
+  return (int)s->len;
+}

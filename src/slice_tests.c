@@ -1757,6 +1757,13 @@ UTEST(slice, macro_args_evaluated_once) {
   ASSERT_EQ(out, 7);
   ASSERT_EQ(slice_eval_calls, 2);  // slice, out
 
+  // Push evaluates the arena once even when it does not grow.
+  slice_eval_calls = 0;
+  *Push(slice_eval_arena(arena), slice_eval_slice(s)) = slice_eval_int(8);
+  ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, value
+  ASSERT_EQ(s->data[0], 8);
+  ASSERT_EQ(s->len, 1);
+
   fints b = {0};
   slice_eval_calls = 0;
   SliceFixed(slice_eval_arena(arena), slice_eval_fints(&b), slice_eval_cap(4));

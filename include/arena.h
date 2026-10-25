@@ -117,6 +117,18 @@
     }                           \
   } while (0)
 
+/**
+ * @brief Compile-time check that two type expressions are compatible.
+ * @param a First type expression (e.g. `*s->data` for an element type)
+ * @param b Second type expression (e.g. `*(arr)` for an array element, or a pointer)
+ * @param msg Message reported on failure
+ *
+ * Arguments are never evaluated; the macro only inspects their types, and
+ * stringizes both operands into the diagnostic.
+ */
+#define _AssertTypesCompatible(a, b, msg) \
+  _Static_assert(__builtin_types_compatible_p(__typeof__(a), __typeof__(b)), msg " (" #a " vs " #b ")")
+
 #ifdef OOM_COMMIT
 #include <sys/mman.h>
 #include <unistd.h>
@@ -364,21 +376,20 @@ typedef struct { unsigned char _; } FixedKind;
  *   ints *s = New(arena, ints);
  *   SliceFromArray(arena, s, data);
  */
-#define SliceFromArray(arena, s, a)                                                              \
-  ({                                                                                             \
-    __auto_type _fa_dst = (s);                                                                   \
-    _Static_assert(__builtin_types_compatible_p(__typeof__(*(_fa_dst->data)), __typeof__(*(a))), \
-                   "slice element type does not match the array");                               \
-    _SliceAssertStatic(_fa_dst);                                                                 \
-    _Static_assert(_Generic(_fa_dst->_kind, MovableKind: 1, default: 0),                         \
-                   "expected a movable Slice destination");                                      \
-    __auto_type _fa_arena = (arena);                                                             \
-    _SliceAssertArray(a);                                                                        \
-    isize _fa_len = _SliceArrayLen(a);                                                           \
-    _fa_dst->data = New(_fa_arena, __typeof__(*(a)), _fa_len, (a));                              \
-    _fa_dst->len = _fa_len;                                                                      \
-    _fa_dst->cap = _fa_len;                                                                      \
-    *_fa_dst;                                                                                    \
+#define SliceFromArray(arena, s, a)                                                                \
+  ({                                                                                               \
+    __auto_type _fa_dst = (s);                                                                     \
+    _AssertTypesCompatible(*(_fa_dst->data), *(a), "slice element type does not match the array"); \
+    _SliceAssertStatic(_fa_dst);                                                                   \
+    _Static_assert(_Generic(_fa_dst->_kind, MovableKind: 1, default: 0),                           \
+                   "expected a movable Slice destination");                                        \
+    __auto_type _fa_arena = (arena);                                                               \
+    _SliceAssertArray(a);                                                                          \
+    isize _fa_len = _SliceArrayLen(a);                                                             \
+    _fa_dst->data = New(_fa_arena, __typeof__(*(a)), _fa_len, (a));                                \
+    _fa_dst->len = _fa_len;                                                                        \
+    _fa_dst->cap = _fa_len;                                                                        \
+    *_fa_dst;                                                                                      \
   })
 
 /** Aligned `data`, or `NULL` for an empty slice. */
@@ -403,8 +414,8 @@ typedef struct { unsigned char _; } FixedKind;
 /**
  * Append an element and return it.
  *
- * `TryPush(&b)` is the fixed-capacity form: `FixedSlice` only, never grows, and
- * returns `NULL` when full. `TryPush(arena, s)` is the movable form: it grows only
+ * `TryPush(s)` appends without growing on either slice class and returns
+ * `NULL` when full. `TryPush(arena, s)` is the movable form: it grows only
  * when the backing ends at the arena tip (or the slice is empty), where capacity
  * is bumped in place and nothing moves; off-tip it returns `NULL` when full.
  * `Push(arena, s)` grows off-tip too and may relocate.
@@ -414,25 +425,23 @@ typedef struct { unsigned char _; } FixedKind;
  * room. A held slot dies at the next growing call, so reacquire it after
  * `TryPush(arena, s)`, `Push`, `Reserve`, or `Clone`.
  *
- *   if (int *p = TryPush(&b)) *p = 42;       // FixedSlice only
+ *   if (int *p = TryPush(s)) *p = 42;        // either class; NULL when full
  *   if (int *p = TryPush(arena, s)) *p = 42; // movable; grows only at the tip
  *   *Push(arena, s) = 42;                   // always grows
  */
 #define TryPush(...)            _TryPushX(__VA_ARGS__, _TryPush2, _TryPush1)(__VA_ARGS__)
 #define _TryPushX(a, b, c, ...) c
 
-/* Fixed-capacity append. Returns `NULL` when full. Always bind or test the result. */
-#define _TryPush1(slice)                                                                      \
-  ({                                                                                          \
-    __auto_type _b = (slice);                                                                 \
-    _SliceAssertStatic(_b);                                                                   \
-    _SliceAssertRuntimeDebug(_b);                                                             \
-    _Static_assert(_Generic(_b->_kind, FixedKind: 1, default: 0),                             \
-                   "TryPush(&b) requires a FixedSlice value; use TryPush(arena, s) or Push"); \
-    __typeof__(*_b->data)* _slot = NULL;                                                      \
-    if (_b->len < _b->cap)                                                                    \
-      _slot = &_b->data[_b->len++];                                                           \
-    _slot;                                                                                    \
+/* Append without growing, either slice class. Returns `NULL` when full. Always bind or test the result. */
+#define _TryPush1(slice)                 \
+  ({                                     \
+    __auto_type _b = (slice);            \
+    _SliceAssertStatic(_b);              \
+    _SliceAssertRuntimeDebug(_b);        \
+    __typeof__(*_b->data)* _slot = NULL; \
+    if (ARENA_LIKELY(_b->len < _b->cap)) \
+      _slot = &_b->data[_b->len++];      \
+    _slot;                               \
   })
 
 /* Movable append. Grows only at the tip, never relocates. Returns `NULL` when full and off-tip. Always bind
@@ -441,11 +450,11 @@ typedef struct { unsigned char _; } FixedKind;
   ({                                                                                             \
     __auto_type _a = (arena);                                                                    \
     __auto_type _b = (slice);                                                                    \
+    _Static_assert(_Generic(_b->_kind, MovableKind: 1, default: 0), "expected a movable Slice"); \
     _SliceAssertStatic(_b);                                                                      \
     _SliceAssertRuntimeDebug(_b);                                                                \
-    _Static_assert(_Generic(_b->_kind, MovableKind: 1, default: 0), "expected a movable Slice"); \
     __typeof__(*_b->data)* _slot = NULL;                                                         \
-    if (_b->len < _b->cap ||                                                                     \
+    if (ARENA_LIKELY(_b->len < _b->cap) ||                                                       \
         arena_slice_grow_at_tip(_a, _b, sizeof *_b->data, alignof(__typeof__(*_b->data))))       \
       _slot = &_b->data[_b->len++];                                                              \
     _slot;                                                                                       \
@@ -454,12 +463,13 @@ typedef struct { unsigned char _; } FixedKind;
 /* Movable append. Grows as needed; may relocate. */
 #define Push(arena, slice)                                                                       \
   ({                                                                                             \
+    __auto_type _a = (arena);                                                                    \
     __auto_type _b = (slice);                                                                    \
+    _Static_assert(_Generic(_b->_kind, MovableKind: 1, default: 0), "expected a movable Slice"); \
     _SliceAssertStatic(_b);                                                                      \
     _SliceAssertRuntimeDebug(_b);                                                                \
-    _Static_assert(_Generic(_b->_kind, MovableKind: 1, default: 0), "expected a movable Slice"); \
     if (ARENA_UNLIKELY(_b->len >= _b->cap))                                                      \
-      arena_slice_grow((arena), _b, sizeof(*_b->data), alignof(__typeof__(*_b->data)));          \
+      arena_slice_grow(_a, _b, sizeof(*_b->data), alignof(__typeof__(*_b->data)));               \
     __typeof__(*_b->data)* _slot = &_b->data[_b->len++];                                         \
     _slot;                                                                                       \
   })
@@ -471,16 +481,17 @@ typedef struct { unsigned char _; } FixedKind;
  *   int top;
  *   if (Pop(s, &top)) use(top);
  */
-#define Pop(slice, out)           \
-  _PopOk(({                       \
-    __auto_type _s = (slice);     \
-    __auto_type _o = (out);       \
-    _SliceAssertStatic(_s);       \
-    _SliceAssertRuntimeDebug(_s); \
-    bool _popped = _s->len > 0;   \
-    if (_popped)                  \
-      *_o = _s->data[--_s->len];  \
-    _popped;                      \
+#define Pop(slice, out)                                                                         \
+  _PopOk(({                                                                                     \
+    __auto_type _s = (slice);                                                                   \
+    __auto_type _o = (out);                                                                     \
+    _AssertTypesCompatible(*_o, *_s->data, "pop output element type does not match the slice"); \
+    _SliceAssertStatic(_s);                                                                     \
+    _SliceAssertRuntimeDebug(_s);                                                               \
+    bool _popped = _s->len > 0;                                                                 \
+    if (_popped)                                                                                \
+      *_o = _s->data[--_s->len];                                                                \
+    _popped;                                                                                    \
   }))
 
 ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
@@ -521,8 +532,7 @@ ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
     __auto_type _ix_p = (ptr);                                                                      \
     _SliceAssertStatic(_ix_s);                                                                      \
     _SliceAssertRuntimeDebug(_ix_s);                                                                \
-    _Static_assert(__builtin_types_compatible_p(__typeof__(_ix_s->data), __typeof__(_ix_p)),        \
-                   "slice element pointer type does not match");                                    \
+    _AssertTypesCompatible(_ix_s->data, _ix_p, "slice element pointer type does not match");        \
     _Static_assert(sizeof(*_ix_s->data) > 0, "slice elements must not be zero-size");               \
     uintptr_t _ix_diff = (uintptr_t)_ix_p - (uintptr_t)_ix_s->data;                                 \
     Assert(_ix_s->len > 0 && _ix_diff % sizeof(*_ix_s->data) == 0 &&                                \
@@ -544,10 +554,10 @@ ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
   do {                                                                                             \
     __auto_type _s = (slice);                                                                      \
     isize _rsv_cap = (min_cap);                                                                    \
+    _Static_assert(_Generic(_s->_kind, MovableKind: 1, default: 0), "expected a movable Slice");   \
     _SliceAssertStatic(_s);                                                                        \
     _SliceAssertRuntimeDebug(_s);                                                                  \
     Assert(_rsv_cap >= 0 && "reserve size must be non-negative");                                  \
-    _Static_assert(_Generic(_s->_kind, MovableKind: 1, default: 0), "expected a movable Slice");   \
     arena_slice_reserve((arena), _s, sizeof(*_s->data), alignof(__typeof__(*_s->data)), _rsv_cap); \
   } while (0)
 
@@ -598,23 +608,22 @@ ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
  *   Clone(arena, c, s);
  *   Clone(arena, c, s, 3, 4);
  */
-#define _CloneDst(arena, out, src, start, length)                                                        \
-  do {                                                                                                   \
-    __auto_type _cd_out = (out);                                                                         \
-    __auto_type _cd_src = (src);                                                                         \
-    isize _cd_st = (start);                                                                              \
-    isize _cd_len = (length);                                                                            \
-    _SliceAssertStatic(_cd_out);                                                                         \
-    _SliceAssertStatic(_cd_src);                                                                         \
-    _Static_assert(__builtin_types_compatible_p(__typeof__(*_cd_out->data), __typeof__(*_cd_src->data)), \
-                   "clone element type does not match the source");                                      \
-    Assert((_cd_src->data != NULL || _cd_len == 0) && "Clone needs data to copy");                       \
-    Assert(_cd_st >= 0 && _cd_len >= 0 && _cd_st <= _cd_src->len - _cd_len);                             \
-    if (_cd_len > 0)                                                                                     \
-      _cd_out->data = New((arena), __typeof__(*_cd_src->data), _cd_len, (_cd_src->data + _cd_st));       \
-    else                                                                                                 \
-      _cd_out->data = NULL;                                                                              \
-    _cd_out->len = _cd_out->cap = _cd_len;                                                               \
+#define _CloneDst(arena, out, src, start, length)                                                           \
+  do {                                                                                                      \
+    __auto_type _cd_out = (out);                                                                            \
+    __auto_type _cd_src = (src);                                                                            \
+    isize _cd_st = (start);                                                                                 \
+    isize _cd_len = (length);                                                                               \
+    _SliceAssertStatic(_cd_out);                                                                            \
+    _SliceAssertStatic(_cd_src);                                                                            \
+    _AssertTypesCompatible(*_cd_out->data, *_cd_src->data, "clone element type does not match the source"); \
+    Assert((_cd_src->data != NULL || _cd_len == 0) && "Clone needs data to copy");                          \
+    Assert(_cd_st >= 0 && _cd_len >= 0 && _cd_st <= _cd_src->len - _cd_len);                                \
+    if (_cd_len > 0)                                                                                        \
+      _cd_out->data = New((arena), __typeof__(*_cd_src->data), _cd_len, (_cd_src->data + _cd_st));          \
+    else                                                                                                    \
+      _cd_out->data = NULL;                                                                                 \
+    _cd_out->len = _cd_out->cap = _cd_len;                                                                  \
   } while (0)
 
 #define Clone(...)                     _CloneX(__VA_ARGS__, _Clone5, _Clone4, _Clone3)(__VA_ARGS__)
