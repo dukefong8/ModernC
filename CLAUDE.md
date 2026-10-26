@@ -56,7 +56,7 @@ OOM policy is per-call and three-way: default is `longjmp` to the `jmp_buf` regi
 
 The API surface built on top: `New(arena, T[, n][, NO_INIT | OOM_NULL | src_ptr])` (`_Generic`
 selects copy-init when the 4th arg is a pointer), `Scratch(arena)` for scope-restored temporaries,
-`Slice(T)` + `TryPush`/`Push`/`Reserve`/`Clone`/`SliceAtTip`, and the `astr` length-prefixed string
+`Slice(T)` + `TryPush`/`Push`/`PushN`/`Reserve`/`Clone`/`SliceAtTip`, and the `astr` length-prefixed string
 family (`S(s)` for printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
 
 `Push(arena, s)` is the always-growing form: it returns an uninitialized slot, requires a movable
@@ -71,7 +71,7 @@ whose contents are produced rather than known up front is written field by field
 slot; `New` allocates a standalone object, it does not append. `Reserve(arena, s, n)` grows
 capacity up front to avoid `NULL` checks in fill loops (debug builds still trap on state
 violations). A held slot dies at the next growing call: reacquire it after `TryPush(arena, s)`,
-`Push`/`Reserve`, or reach elements by index with `At(s, i)`.
+`Push`/`PushN`/`Reserve`, or reach elements by index with `At(s, i)`.
 
 `Slice(T)` is a plain descriptor union (`T *data`, `len`, `cap`) that expands directly to an
 anonymous union — no `__typeof__`, no array wrapper. `Slice(struct Point)` and

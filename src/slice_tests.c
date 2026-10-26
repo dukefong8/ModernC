@@ -1608,6 +1608,118 @@ UTEST(slice, push_unchecked_top_up_partially_filled) {
   ASSERT_EQ(s->data[102], 99);
 }
 
+/* --- Slice: PushN bulk claim --- */
+
+UTEST(slice, pushn_claims_slots) {
+  enum { size = KB(16) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+  Reserve(arena, s, 200);
+  isize cap = s->cap;
+  byte* cur = arena->cur;
+
+  int* dst = PushN(arena, s, 200);
+  for (int i = 0; i < 200; i++)
+    dst[i] = i * 2;
+
+  ASSERT_EQ(s->len, 200);
+  ASSERT_EQ(s->cap, cap);      // no growth stepped it
+  ASSERT_EQ(arena->cur, cur);  // and nothing allocated at all
+  ASSERT_EQ(s->data[0], 0);
+  ASSERT_EQ(s->data[199], 398);
+}
+
+UTEST(slice, pushn_zero_traps) {
+#if defined(SLICE_HAVE_FORK)
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+
+  // Run the failing claim in a child: Assert traps, so the parent can only
+  // observe the signal. `n == 0` must not silently return `NULL + 0`.
+  pid_t pid = fork();
+  ASSERT_NE(pid, (pid_t)-1);
+  if (pid == 0) {
+    (void)freopen("/dev/null", "w", stderr);  // keep the assertion log quiet
+    (void)PushN(arena, s, 0);
+    _exit(0);  // reached only if the `n > 0` check failed to trap
+  }
+
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  ASSERT_TRUE(WIFSIGNALED(status));
+#else
+  UTEST_SKIP("fork is unavailable on this platform");
+#endif
+}
+
+UTEST(slice, pushn_grows_and_preserves) {
+  enum { size = KB(16) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+  int* first = PushN(arena, s, 3);
+  first[0] = 0;
+  first[1] = 10;
+  first[2] = 20;
+
+  New(arena, int, 64);  // off the tip: claiming must copy, not extend
+  int* rest = PushN(arena, s, 100);
+  for (int i = 0; i < 100; i++)
+    rest[i] = i;
+
+  ASSERT_EQ(s->len, 103);
+  ASSERT_TRUE(s->cap >= 103);
+  ASSERT_EQ(s->data[0], 0);
+  ASSERT_EQ(s->data[2], 20);
+  ASSERT_EQ(s->data[3], 0);
+  ASSERT_EQ(s->data[102], 99);
+}
+
+UTEST(slice, pushn_appends_to_nonfresh) {
+  // Short capacity grows instead of overrunning: the second claim relocates.
+  enum { size = KB(16) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+  int* a = PushN(arena, s, 10);
+  for (int i = 0; i < 10; i++)
+    a[i] = i;
+  ASSERT_EQ(s->cap, 10);
+
+  int* b = PushN(arena, s, 5);
+  for (int i = 0; i < 5; i++)
+    b[i] = 100 + i;
+
+  ASSERT_EQ(s->len, 15);
+  ASSERT_TRUE(s->cap >= 15);
+  for (int i = 0; i < 10; i++)
+    ASSERT_EQ(s->data[i], i);
+  for (int i = 0; i < 5; i++)
+    ASSERT_EQ(s->data[10 + i], 100 + i);
+}
+
+UTEST(slice, pushn_evaluates_args_once) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* s = New(arena, ints);
+  slice_eval_calls = 0;
+  int* dst = PushN(slice_eval_arena(arena), slice_eval_slice(s), slice_eval_cap(4));
+  ASSERT_EQ(slice_eval_calls, 3);  // arena, slice, n
+  for (int i = 0; i < 4; i++)
+    dst[i] = i;
+  ASSERT_EQ(s->len, 4);
+  ASSERT_EQ(s->data[3], 3);
+}
+
 UTEST(slice, reserve_grows_up_front) {
   enum { size = KB(16) };
   byte mem[size] = {0};

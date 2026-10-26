@@ -1,0 +1,10 @@
+// PushN claims n slots and returns the typed base; len advances at once.
+#include "arena.h"
+
+typedef Slice(int) ints;
+
+int use(Arena* arena, ints* s) {
+  int* dst = PushN(arena, s, 4);
+  for (int i = 0; i < 4; i++) dst[i] = i * 3;
+  return (int)s->len;
+}

@@ -170,7 +170,7 @@ static void test_slice(Arena* arena, i64s* fibs) {
     Scratch(arena);
     ALOG(arena);
     for (int i = 9; i < 11; ++i) {
-      *Push(arena, fibs) = fibs->data[i - 2] + fibs->data[i - 1];
+      *Push(arena, fibs) = At(fibs, i - 2) + At(fibs, i - 1);
     }
     ALOG(arena);
   }

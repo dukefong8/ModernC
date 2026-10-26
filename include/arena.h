@@ -423,7 +423,7 @@ typedef struct { unsigned char _; } FixedKind;
  * The slot is uninitialized: caller must write `*slot` before reading. Check
  * for `NULL`; ignoring it still appends an uninitialized element when there is
  * room. A held slot dies at the next growing call, so reacquire it after
- * `TryPush(arena, s)`, `Push`, `Reserve`, or `Clone`.
+ * `TryPush(arena, s)`, `Push`, `PushN`, `Reserve`, or `Clone`.
  *
  *   if (int *p = TryPush(s)) *p = 42;        // either class; NULL when full
  *   if (int *p = TryPush(arena, s)) *p = 42; // movable; grows only at the tip
@@ -472,6 +472,38 @@ typedef struct { unsigned char _; } FixedKind;
       arena_slice_grow(_a, _b, sizeof(*_b->data), alignof(__typeof__(*_b->data)));               \
     __typeof__(*_b->data)* _slot = &_b->data[_b->len++];                                         \
     _slot;                                                                                       \
+  })
+
+/**
+ * Claim `n` slots and return the base pointer; `len` advances by `n` at once.
+ * `n` must be positive. Grows (may relocate) when short, like `Push`; never
+ * returns NULL. The slots are uninitialized: caller must write `dst[0..n)`
+ * before reading. Each argument is evaluated once.
+ *
+ * Prefer over a per-element `Push`/`TryPush` loop for counted fills: the loop
+ * over the returned base has no per-iteration guard or call and vectorizes
+ * like a raw fill.
+ *
+ *   ints t = *s;
+ *   int *dst = PushN(arena, &t, N);
+ *   for (isize i = 0; i < N; i++) dst[i] = f(i);
+ *   *s = t;
+ */
+#define PushN(arena, slice, n)                                                                       \
+  ({                                                                                                 \
+    __auto_type _pn_a = (arena);                                                                     \
+    __auto_type _pn_b = (slice);                                                                     \
+    isize _pn_n = (n);                                                                               \
+    _Static_assert(_Generic(_pn_b->_kind, MovableKind: 1, default: 0), "expected a movable Slice");  \
+    _SliceAssertStatic(_pn_b);                                                                       \
+    _SliceAssertRuntimeDebug(_pn_b);                                                                 \
+    Assert(_pn_n > 0 && "push count must be positive");                                              \
+    if (ARENA_UNLIKELY(_pn_n > _pn_b->cap - _pn_b->len))                                             \
+      arena_slice_reserve((_pn_a), (_pn_b), sizeof(*_pn_b->data), alignof(__typeof__(*_pn_b->data)), \
+                          _pn_b->len + _pn_n);                                                       \
+    __typeof__(*_pn_b->data)* _pn_dst = &_pn_b->data[_pn_b->len];                                    \
+    _pn_b->len += _pn_n;                                                                             \
+    _pn_dst;                                                                                         \
   })
 
 /**
@@ -543,12 +575,15 @@ ARENA_NODISCARD ARENA_INLINE bool _PopOk(bool ok) {
 /**
  * Ensure `cap >= min_cap` (no-op below `cap`). Movable only; may relocate.
  *
- * To fill many elements, `Reserve` once, write `data` directly, then
- * advance `len` once:
+ * To fill a counted range, reserve the full count, then loop exactly `n` times
+ * over a stack-owned copy with the unchecked 1-arg `TryPush` (room is
+ * guaranteed, so the result is not checked). The stack copy lets the loop
+ * vectorize.
  *
- *   Reserve(arena, s, s->len + n);
- *   for (isize i = 0; i < n; i++) s->data[s->len + i] = f(i);
- *   s->len += n;
+ *   ints t = *s;
+ *   Reserve(arena, &t, t.len + n);
+ *   for (isize i = 0; i < n; i++) *TryPush(&t) = f(i);
+ *   *s = t;
  */
 #define Reserve(arena, slice, min_cap)                                                             \
   do {                                                                                             \

@@ -1,0 +1,13 @@
+// EXPECT: expected a movable Slice
+// A hand-written descriptor with an unknown tag must not silently take the
+// movable path: PushN requires a MovableKind tag.
+#include "arena.h"
+
+typedef struct { unsigned char _; } WrongKind;
+typedef union { struct { int *data; long len, cap; }; WrongKind _kind; } Weird;
+
+void use(Arena* arena) {
+  Weird* w = New(arena, Weird);
+  int* dst = PushN(arena, w, 4);
+  (void)dst;
+}

@@ -1,0 +1,13 @@
+// EXPECT: expected a movable Slice
+// PushN grows, so it requires a plain movable Slice, not a FixedSlice value:
+// FixedKind matches no _Generic association.
+#include "arena.h"
+
+typedef FixedSlice(int) fints;
+
+void use(Arena* arena) {
+  fints b = {0};
+  SliceFixed(arena, &b, 4);
+  int* dst = PushN(arena, &b, 4);
+  (void)dst;
+}
