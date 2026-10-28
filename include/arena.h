@@ -251,17 +251,24 @@ static void autofree_impl(void* p) {
  * `New`, `astr`) must not escape: no returning it, storing it in a
  * longer-lived structure, or handing it to a callback.
  *
- * To keep a result, copy it to an outer arena with the copy last in the
- * block, or build it after the scope:
- *
- *   Arena *out = arena;
- *   ints *kept = New(out, ints);
  *   {
  *     Scratch(arena);
  *     ints *tmp = New(arena, ints);
  *     *Push(arena, tmp) = (int)42;
- *     Clone(out, kept, tmp);                    // last in the block
+ *     use(tmp);   // must not escape the block
  *   }
+ *
+ * To keep a result, use the manual block: explicit name, no shadowing,
+ * with the copy-out last in the block:
+ *
+ *   ints *result = New(arena, ints);
+ *   {
+ *     Arena scratch[] = {*arena};
+ *     ints *work = New(scratch, ints);
+ *     *Push(scratch, work) = (int)42;
+ *     Clone(arena, result, work);   // copy out before further arena use
+ *   }
+ *   return result;
  */
 #define Scratch(arena)                       \
   __arena_restore Arena* ARENA_ORIG = arena; \
