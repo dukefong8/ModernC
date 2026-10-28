@@ -133,6 +133,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#ifndef ARENA_RESERVE_SIZE
+#define ARENA_RESERVE_SIZE GB(2)
+#endif
+
 // Pages to commit at once when growing arena (default 1MB on 4KB pages)
 #ifndef ARENA_COMMIT_PAGE_COUNT
 #define ARENA_COMMIT_PAGE_COUNT 256
@@ -251,17 +255,24 @@ static void autofree_impl(void* p) {
  * `New`, `astr`) must not escape: no returning it, storing it in a
  * longer-lived structure, or handing it to a callback.
  *
- * To keep a result, copy it to an outer arena with the copy last in the
- * block, or build it after the scope:
- *
- *   Arena *out = arena;
- *   ints *kept = New(out, ints);
  *   {
  *     Scratch(arena);
  *     ints *tmp = New(arena, ints);
  *     *Push(arena, tmp) = (int)42;
- *     Clone(out, kept, tmp);                    // last in the block
+ *     use(tmp);   // must not escape the block
  *   }
+ *
+ * To keep a result, use the manual block: explicit name, no shadowing,
+ * with the copy-out last in the block:
+ *
+ *   ints *result = New(arena, ints);
+ *   {
+ *     Arena scratch[] = {*arena};
+ *     ints *work = New(scratch, ints);
+ *     *Push(scratch, work) = (int)42;
+ *     Clone(arena, result, work);   // copy out before further arena use
+ *   }
+ *   return result;
  */
 #define Scratch(arena)                       \
   __arena_restore Arena* ARENA_ORIG = arena; \
@@ -689,7 +700,7 @@ ARENA_INLINE Arena arena_init(byte* buf, isize size) {
     isize page_size = arena_os_pagesize();
     size = AlignPow2(size, page_size);
     a.commit_size = page_size * ARENA_COMMIT_PAGE_COUNT;
-    a.reserve_size = Max(a.commit_size, size);
+    a.reserve_size = Max((isize)ARENA_RESERVE_SIZE, size);
 
     buf = arena_os_reserve(a.reserve_size);
     if (!buf) {

@@ -179,6 +179,17 @@ static void test_slice(Arena* arena, i64s* fibs) {
     *Push(arena, fibs) = fibs->data[i - 2] + fibs->data[i - 1];
   }
   ALOG(arena);
+  {
+    Arena tmp[] = {*arena};
+    ALOG(arena);
+    ALOG(tmp);
+
+    for (int i = 9; i < 99; ++i) {
+      *Push(tmp, fibs) = At(fibs, i - 2) + At(fibs, i - 1);
+    }
+    ALOG(tmp);
+    ALOG(arena);
+  }
 }
 
 #include "json.h"
