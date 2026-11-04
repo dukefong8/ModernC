@@ -133,7 +133,7 @@ No compile-time or runtime check proves these; they are caller obligations:
 
 - liveness of a `data`/element pointer or slot across movable `Push` /
   `PushN` / `Reserve` / `Clone`-into-it;
-- arena lifetime after `Scratch` exit, `arena_reset`, `arena_release`,
+- arena lifetime after `Scoped` exit, `arena_reset`, `arena_release`,
   `arena_free`;
 - reuse of a popped slot; explicit descriptor copies (`=`, struct copy,
   `memcpy`); hand-written descriptors over caller memory; descriptors
@@ -158,12 +158,12 @@ guaranteed; everything else compiles and runs without a diagnostic.
 | `Pop` | the popped slot (memory kept, next append overwrites it); rest stays valid | empty → `false`, `*out` untouched; slot reuse not enforced |
 | `SliceFixed` on an initialized value | prior backing and its aliases (orphaned) | capacity/stride checks; old aliases not enforced |
 | `Clone` into `out` | `out`'s prior backing (orphaned); shallow: element-held pointers still alias the source | bounds/layout checks; relocatable element types not rejected; arena lifetime not enforced |
-| Descriptor copies; `Scratch`/reset/release | everything sharing the block / range | none |
+| Descriptor copies; `Scoped`/reset/release | everything sharing the block / range | none |
 | Hand-written `{data, len, cap}` over caller memory | external ownership/lifetime; a later `Reserve` moves it into the arena | layout checks only |
 
 Survival rules: store indices or offsets across growth; reacquire `data`
 after any growing call; never keep popped-slot pointers; treat
-`Scratch`/reset as freeing every slice in range.
+`Scoped`/reset as freeing every slice in range.
 
 ## 5. Performance
 
@@ -219,8 +219,8 @@ rejected** on all three toolchains, 0 build warnings.
   `PushN` (claim/grow/preserve/append/zero-traps/once-only), `Pop` (last/cap/slots/
   round-trips/empty-safe), `Reserve` (grow/preserve/grow-only/at-tip),
   layout/type identity, descriptor passing (pointer vs value, struct
-  fields), lifetimes (fixed outlives builder, movable survives `Scratch`,
-  fixed never relocates), `SliceAtTip` transitions, overlap/`Scratch`,
+  fields), lifetimes (fixed outlives builder, movable survives `Scoped`,
+  fixed never relocates), `SliceAtTip` transitions, overlap/`Scoped`,
   nodiscard behavior, once-only argument evaluation per entry point.
 - Fixtures, pass (18): `const_fixed_copy`, `data_lvalue_and_layout`,
   `duplicate_expansions`, `fixed_slice`, `from_array_alignment`,
@@ -247,7 +247,7 @@ rejected** on all three toolchains, 0 build warnings.
 ## 7. Non-goals and divergences
 
 - No static roots, lifetimes, or escape analysis: arena lifetime is the only
-  lifetime. `Scratch` slices can escape; nothing checks it.
+  lifetime. `Scoped` slices can escape; nothing checks it.
 - Movable relocation is C-only (no Goose equivalent): raw pointers, slots,
   and descriptor copies dangle after off-tip growth; indices and `At` do not.
 - `Clone` is shallow and unconditional: no relocatable/self-relative type

@@ -256,7 +256,7 @@ static void autofree_impl(void* p) {
  * longer-lived structure, or handing it to a callback.
  *
  *   {
- *     Scratch(arena);
+ *     Scoped(arena);
  *     ints *tmp = New(arena, ints);
  *     *Push(arena, tmp) = (int)42;
  *     use(tmp);   // must not escape the block
@@ -274,7 +274,7 @@ static void autofree_impl(void* p) {
  *   }
  *   return result;
  */
-#define Scratch(arena)                       \
+#define Scoped(arena)                        \
   __arena_restore Arena* ARENA_ORIG = arena; \
   Arena arena[] = {*ARENA_ORIG}
 
@@ -888,7 +888,7 @@ ARENA_INLINE void* arena_alloc(Arena* arena, isize size, isize align, isize coun
 ARENA_INLINE void* arena_alloc_init(Arena* arena, isize size, isize align, isize count, const void* initptr) {
   Assert(initptr != NULL && "initptr cannot be NULL");
   void* ptr = arena_alloc(arena, size, align, count, NO_INIT);
-  memmove(ptr, initptr, size * count);  // initptr may alias ptr (e.g. escaped Scratch data)
+  memmove(ptr, initptr, size * count);  // initptr may alias ptr (e.g. escaped Scoped data)
   return ptr;
 }
 

@@ -113,9 +113,9 @@ UTEST(arena, reset_allows_reuse) {
   ASSERT_EQ(a, b);
 }
 
-/* --- Scratch (scoped temporary allocation) --- */
+/* --- Scoped (scoped temporary allocation) --- */
 
-UTEST(arena, scratch_restores_on_exit) {
+UTEST(arena, scoped_restores_on_exit) {
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -126,9 +126,9 @@ UTEST(arena, scratch_restores_on_exit) {
 
   ALOG(arena);
   {
-    Scratch(arena);
+    Scoped(arena);
     New(arena, char, 512);
-    // arena->cur advanced inside scratch
+    // arena->cur advanced inside scoped
     ALOG(arena);
     ASSERT_GT(arena->cur, saved);
   }
@@ -138,7 +138,7 @@ UTEST(arena, scratch_restores_on_exit) {
   ASSERT_EQ(arena->end - arena->beg, saved_size);
 }
 
-UTEST(arena, scratch_nested) {
+UTEST(arena, scoped_nested) {
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -147,12 +147,12 @@ UTEST(arena, scratch_nested) {
   isize size0 = arena->end - arena->beg;
   ALOG(arena);
   {
-    Scratch(arena);
+    Scoped(arena);
     New(arena, char, 100);
     byte* level1 = arena->cur;
     ALOG(arena);
     {
-      Scratch(arena);
+      Scoped(arena);
       New(arena, char, 200);
       ALOG(arena);
       ASSERT_GT(arena->cur, level1);
@@ -167,10 +167,10 @@ UTEST(arena, scratch_nested) {
 
 typedef Slice(int) ints;
 
-/* Outer and scratch cursors share one region: an outer write through an alias
- * consumes the earliest scratch slots, so the alias is used last in the block
+/* Outer and scoped cursors share one region: an outer write through an alias
+ * consumes the earliest scoped slots, so the alias is used last in the block
  * while the outer result stays intact. */
-UTEST(arena, scratch_outer_alias_clone) {
+UTEST(arena, scoped_outer_alias_clone) {
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -178,11 +178,11 @@ UTEST(arena, scratch_outer_alias_clone) {
   Arena* out = arena;  // alias to the outer arena, bound before the shadow
   ints* kept = New(out, ints);
   {
-    Scratch(arena);  // `arena` is a temporary copy here
+    Scoped(arena);  // `arena` is a temporary copy here
     ints* tmp = New(arena, ints);
     *Push(arena, tmp) = (int)42;
 
-    ints* extra = New(arena, ints);  // more scratch work before the outer write
+    ints* extra = New(arena, ints);  // more scoped work before the outer write
     *Push(arena, extra) = (int)7;
     ASSERT_EQ(extra->data[0], 7);
 
@@ -195,9 +195,9 @@ UTEST(arena, scratch_outer_alias_clone) {
   ASSERT_GT(arena->cur, arena->beg);
 }
 
-/* The clone destination starts at the scratch base, inside the source data.
+/* The clone destination starts at the scoped base, inside the source data.
  * arena_alloc_init copies with memmove, so the overlap is safe. */
-UTEST(arena, scratch_overlapping_clone) {
+UTEST(arena, scoped_overlapping_clone) {
   enum { size = KB(8) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -205,7 +205,7 @@ UTEST(arena, scratch_overlapping_clone) {
   Arena* out = arena;
   ints* big = New(out, ints);
   {
-    Scratch(arena);
+    Scoped(arena);
     ints* tmp = New(arena, ints);
     for (int i = 0; i < 64; i++)
       *Push(arena, tmp) = (int)i;
@@ -222,10 +222,10 @@ UTEST(arena, scratch_overlapping_clone) {
     ASSERT_EQ(big->data[i], (int)i);
 }
 
-/* Documented limit: an outer allocation larger than the scratch's advance puts
- * the outer cursor past the scratch cursor, so later scratch allocations land
+/* Documented limit: an outer allocation larger than the scoped's advance puts
+ * the outer cursor past the scoped cursor, so later scoped allocations land
  * inside the outer object. */
-UTEST(arena, scratch_outer_past_scratch_advance) {
+UTEST(arena, scoped_outer_past_scoped_advance) {
   enum { size = KB(8) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -234,14 +234,14 @@ UTEST(arena, scratch_outer_past_scratch_advance) {
   ints* kept = New(out, ints);
   int changed = 0;
   {
-    Scratch(arena);
+    Scoped(arena);
     ints* tmp = New(arena, ints);
     *Push(arena, tmp) = (int)1;
     Clone(out, kept, tmp);          // outer cursor: base + 4
     int* wide = New(out, int, 64);  // outer cursor: base + 260
     for (int i = 0; i < 64; i++)
       wide[i] = 0xAB;
-    ints* next = New(arena, ints);  // scratch cursor: base + 28, inside `wide`
+    ints* next = New(arena, ints);  // scoped cursor: base + 28, inside `wide`
     *Push(arena, next) = (int)9;
     for (int i = 0; i < 64; i++)
       changed += wide[i] != 0xAB;
@@ -249,9 +249,9 @@ UTEST(arena, scratch_outer_past_scratch_advance) {
   ASSERT_GT(changed, 0);
 }
 
-/* The outer write consumes the scratch prefix, including the clone source's
+/* The outer write consumes the scoped prefix, including the clone source's
  * descriptor: that object must not be used again (e.g. as a second source). */
-UTEST(arena, scratch_source_consumed_by_outer_write) {
+UTEST(arena, scoped_source_consumed_by_outer_write) {
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -259,7 +259,7 @@ UTEST(arena, scratch_source_consumed_by_outer_write) {
   Arena* out = arena;
   ints* kept = New(out, ints);
   {
-    Scratch(arena);
+    Scoped(arena);
     ints* tmp = New(arena, ints);
     *Push(arena, tmp) = (int)5;
 

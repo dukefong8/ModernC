@@ -103,7 +103,7 @@ static inline void arena_default_restore(Arena snapshot) {
 
 astr test_astr(Arena arena[static 1]) {
   {
-    // Scratch(arena);
+    // Scoped(arena);
 
     ALOG(arena);
     astr s3 = {0};
@@ -145,7 +145,7 @@ typedef Slice(int64_t) i64s;
 static void test_slice(Arena* arena, i64s* fibs) {
   ALOG(arena);
   {
-    Scratch(arena);
+    Scoped(arena);
     ALOG(arena);
     while (1) {
       // NO_INIT: p is never read, and fresh anonymous pages are already zero
@@ -167,7 +167,7 @@ static void test_slice(Arena* arena, i64s* fibs) {
   }
   ALOG(arena);
   {
-    Scratch(arena);
+    Scoped(arena);
     ALOG(arena);
     for (int i = 9; i < 11; ++i) {
       *Push(arena, fibs) = At(fibs, i - 2) + At(fibs, i - 1);
@@ -259,7 +259,7 @@ int main(int argc, const char* argv[]) {
 
   ALOG(arena);
   {
-    Scratch(arena);
+    Scoped(arena);
     ALOG(arena);
     New(arena, char, MB(4));
     ALOG(arena);

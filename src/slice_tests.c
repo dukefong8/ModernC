@@ -405,7 +405,7 @@ UTEST(slice, empty_off_tip_can_grow) {
   ASSERT_EQ(t->data[0], 2);
 }
 
-UTEST(slice, overlapping_slices_nested_scratch) {
+UTEST(slice, overlapping_slices_nested_scoped) {
   enum { size = KB(8) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -417,7 +417,7 @@ UTEST(slice, overlapping_slices_nested_scratch) {
   byte* outer_cur = arena->cur;
 
   {
-    Scratch(arena);
+    Scoped(arena);
 
     ints* inner = New(arena, ints);
     for (int i = 1; i <= 4; i++)
@@ -456,13 +456,13 @@ UTEST(slice, overlapping_slices_nested_scratch) {
     ASSERT_EQ(tail_copy->data[2], 4);
 
     {
-      Scratch(arena);
+      Scoped(arena);
       ints* deeper = New(arena, ints);
       *Push(arena, deeper) = 7;
       ASSERT_GT(arena->cur, (byte*)inner->data);
     }
 
-    // Inner survives the nested scratch and remains readable.
+    // Inner survives the nested scoped and remains readable.
     ASSERT_EQ(inner->data[0], 99);
     ASSERT_EQ(inner->data[3], 4);
   }
@@ -474,7 +474,7 @@ UTEST(slice, overlapping_slices_nested_scratch) {
   *Push(arena, outer) = 30;  // spare capacity, no growth needed
   ASSERT_TRUE(outer->data == outer_data);
 
-  // Outer is at the tip again after Scratch: fill it, then extend in place.
+  // Outer is at the tip again after Scoped: fill it, then extend in place.
   while (outer->len < outer->cap)
     *Push(arena, outer) = 0;
   *Push(arena, outer) = 31;
@@ -832,12 +832,12 @@ UTEST(slice, movable_descriptor_lifetime) {
   int* data = s->data;
 
   {
-    Scratch(arena);
+    Scoped(arena);
     New(arena, char, KB(1));
   }
 
   // The descriptor and its data both live in the outer arena range, so a
-  // nested Scratch does not invalidate either.
+  // nested Scoped does not invalidate either.
   ASSERT_TRUE(s->data == data);
   ASSERT_EQ(s->data[0], 1);
 
