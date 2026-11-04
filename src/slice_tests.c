@@ -1,11 +1,6 @@
 #include "arena.h"
+#include "test_fork.h"
 #include "utest.h"
-
-#if defined(__unix__) || defined(__APPLE__) || defined(__COSMOPOLITAN__)
-#include <sys/wait.h>
-#include <unistd.h>
-#define SLICE_HAVE_FORK 1
-#endif
 
 /* --- Slice: Push / Clone --- */
 
@@ -1004,7 +999,7 @@ UTEST(slice, ix_round_trips_with_at) {
 }
 
 UTEST(slice, ix_out_of_bounds_traps) {
-#if defined(SLICE_HAVE_FORK)
+#if defined(TEST_HAVE_FORK)
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};
@@ -1632,7 +1627,7 @@ UTEST(slice, pushn_claims_slots) {
 }
 
 UTEST(slice, pushn_zero_traps) {
-#if defined(SLICE_HAVE_FORK)
+#if defined(TEST_HAVE_FORK)
   enum { size = KB(4) };
   byte mem[size] = {0};
   Arena arena[] = {arena_init(mem, size)};

@@ -180,13 +180,19 @@ static void test_slice(Arena* arena, i64s* fibs) {
   }
   ALOG(arena);
   {
-    Arena tmp[] = {*arena};
+    ScopedTo(arena, tmp);
     ALOG(arena);
     ALOG(tmp);
 
-    for (int i = 9; i < 99; ++i) {
-      *Push(tmp, fibs) = At(fibs, i - 2) + At(fibs, i - 1);
+    // Build the extension in the child, then promote it into `arena` before
+    // the block ends: nothing may point into scoped storage afterwards.
+    i64s* work = New(tmp, i64s);
+    Clone(tmp, work, fibs);
+    // Element 89 would overflow int64_t.
+    for (isize i = work->len; i < 89; ++i) {
+      *Push(tmp, work) = At(work, i - 2) + At(work, i - 1);
     }
+    Clone(arena, fibs, work);
     ALOG(tmp);
     ALOG(arena);
   }

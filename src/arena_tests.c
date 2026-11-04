@@ -1,11 +1,33 @@
 #include "arena.h"
 #include "cspan.h"
 #include "debug.h"
+#include "test_fork.h"
 #include "utest.h"
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <sys/wait.h>
-#include <unistd.h>
+#if defined(TEST_HAVE_FORK) && defined(OOM_COMMIT)
+/* Read one byte at `ptr` in a forked child. Returns 1 if the read did not
+ * complete, 0 if it did, -1 if fork or wait failed, so the calling test fails
+ * instead of trapping the suite. ASan poison is cleared for the page first:
+ * otherwise a poisoned page fails even when it is mapped, and the result says
+ * nothing about the page's protection. */
+static int arena_child_read(const void* ptr) {
+  fflush(NULL);  // a child that dies under ASan can exit through stdio and repeat buffered output
+  pid_t pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0) {
+    (void)freopen("/dev/null", "w", stderr);
+    byte* page = (byte*)((uintptr_t)ptr & ~((uintptr_t)arena_os_pagesize() - 1));
+    ASAN_UNPOISON_MEMORY_REGION(page, arena_os_pagesize());
+    volatile byte b = *(const byte*)ptr;
+    (void)b;
+    _exit(0);
+  }
+  int status = 0;
+  if (waitpid(pid, &status, 0) != pid)
+    return -1;
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : 1;
+}
 #endif
 
 /* --- Arena init / alloc / reset / release --- */
@@ -270,6 +292,73 @@ UTEST(arena, scoped_source_consumed_by_outer_write) {
   }
 
   ASSERT_EQ(kept->data[0], 5);
+}
+
+/* ScopedTo names the child instead of shadowing the parent, for blocks that
+ * copy a result out. The parent's copy-out lands below the child's storage and
+ * survives the exit; the child's storage does not. */
+UTEST(arena, scopedto_copies_out) {
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  ints* result = New(arena, ints);
+  {
+    ScopedTo(arena, scratch);
+    ints* work = New(scratch, ints);
+    *Push(scratch, work) = 42;
+    Clone(arena, result, work);
+  }
+
+  ASSERT_EQ(result->len, 1);
+  ASSERT_EQ(result->data[0], 42);
+}
+
+/* Nothing above the parent's watermark survives: scoped storage included. */
+UTEST(arena, scoped_poisons_dead_storage) {
+#ifdef ASAN_ENABLED
+  enum { size = KB(4) };
+  byte mem[size] = {0};
+  Arena arena[] = {arena_init(mem, size)};
+
+  int* tmp = NULL;
+  {
+    Scoped(arena);
+    tmp = New(arena, int, 4);
+  }
+  ASSERT_TRUE(__asan_address_is_poisoned(tmp));
+#else
+  UTEST_SKIP("ASan is not enabled");
+#endif
+}
+
+/* Dead scoped storage above the parent's committed end is made inaccessible at
+ * exit, so touching it faults in every build. Below that end, outside ASan,
+ * dead storage stays accessible: only the poison covers it. */
+UTEST(arena, scoped_exit_protects_above_parent_end) {
+#if defined(TEST_HAVE_FORK) && defined(OOM_COMMIT)
+  Arena arena[] = {arena_init(NULL, MB(8))};
+  byte* parent_end = arena->end;
+
+  {
+    Scoped(arena);
+    byte* big = New(arena, byte, MB(12), NO_INIT);
+    for (size_t i = 0; i < MB(12); i += arena_os_pagesize())
+      big[i] = 1;
+    ASSERT_GT(arena->end, parent_end);
+  }
+
+  ASSERT_EQ(arena->end, parent_end);
+  ASSERT_EQ(arena_child_read(arena->beg), 0);
+  ASSERT_EQ(arena_child_read(parent_end - 1), 0);
+  ASSERT_EQ(arena_child_read(parent_end), 1);
+#ifdef ASAN_ENABLED
+  ASSERT_TRUE(__asan_address_is_poisoned(parent_end - 1));
+  ASSERT_TRUE(__asan_address_is_poisoned(parent_end));
+#endif
+#else
+  UTEST_SKIP("fork or OOM_COMMIT is unavailable");
+#endif
 }
 
 /* --- OOM handling --- */

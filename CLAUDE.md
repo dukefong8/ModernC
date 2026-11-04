@@ -55,9 +55,18 @@ OOM policy is per-call and three-way: default is `longjmp` to the `jmp_buf` regi
 `_oom_result` temp) — the handler is cleared on fire, so it is one-shot.
 
 The API surface built on top: `New(arena, T[, n][, NO_INIT | OOM_NULL | src_ptr])` (`_Generic`
-selects copy-init when the 4th arg is a pointer), `Scoped(arena)` for scope-restored temporaries,
-`Slice(T)` + `TryPush`/`Push`/`PushN`/`Reserve`/`Clone`/`SliceAtTip`, and the `astr` length-prefixed string
+selects copy-init when the 4th arg is a pointer), `Scoped(arena)` / `ScopedTo(arena, name)` for
+data-stack-style temporaries, `Slice(T)` + `TryPush`/`Push`/`PushN`/`Reserve`/`Clone`/`SliceAtTip`,
+`arena_trim` for `trim_memory()`-style page reclaim, and the `astr` length-prefixed string
 family (`S(s)` for printf, `astr_split`/`astr_split_by_char` iterators, trim/slice/find/hash).
+
+`Scoped` follows Goose's data-stack discipline: a child bump cursor over the parent's unused space,
+storage pushed in lifetime order, and the whole region above the parent's watermark dead at block
+exit (ASan-poisoned, and the pages the child committed handed back). The parent may allocate only to
+copy a result out; that copy lands below the child's storage and must be the block's last use,
+because a later child allocation would land inside it. `ScopedTo(arena, name)` keeps the parent
+visible for that copy-out form. There is no static check for the two cursors sharing one region —
+the compiler cannot prove what Goose's does — so the copy-out order is a caller obligation.
 
 `Push(arena, s)` is the always-growing form: it returns an uninitialized slot, requires a movable
 `Slice`, and may relocate. `TryPush(arena, s)` grows only when the backing ends at the arena tip (or the
@@ -113,11 +122,11 @@ allocated just before, and an unrelated allocation can turn a free into a leak. 
 that looks like a pointless redundant copy, it is usually defending against—or relying on—this
 at-tip property.
 
-**Memory is ASan-poisoned at every logical free point** (`arena_reset`, `Scoped` exit,
-`arena_restore`, `arena_release`, `arena_free`, unallocated regions). Touching an arena pointer
-past its logical lifetime is a hard ASan error in `debug` builds, not silent corruption. Do not
-remove those `ASAN_POISON_MEMORY_REGION` calls or "simplify" the code they guard — this is the
-project's main safety net.
+**Memory is ASan-poisoned at every logical free point** (`arena_reset`, `arena_trim`,
+`Scoped`/`ScopedTo` exit via `arena_scope_exit`, `arena_release`, `arena_free`, unallocated
+regions). Touching an arena pointer past its logical lifetime is a hard ASan error in `debug`
+builds, not silent corruption. Do not remove those `ASAN_POISON_MEMORY_REGION` calls or
+"simplify" the code they guard — this is the project's main safety net.
 
 **Harness layout:** `src/main.c` owns the process: it lazily creates a per-thread default arena
 (`arena_default()`, thread-local, `DEFAULT_ARENA_SIZE` ≈ 4 GB aligned in the default build),

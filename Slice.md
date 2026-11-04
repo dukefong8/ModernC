@@ -209,7 +209,7 @@ CC='cc -std=c23' ./test/typecheck.sh
 CC='cosmocc -mcosmo' ./test/typecheck.sh
 ```
 
-Last recorded: **163 cases pass** (74 `slice.*`), **18 compiled, 29
+Last recorded: **168 cases pass** (74 `slice.*`), **18 compiled, 29
 rejected** on all three toolchains, 0 build warnings.
 
 - `src/slice_tests.c`: construction (`SliceFromArray` ownership/scope,

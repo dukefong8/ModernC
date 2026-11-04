@@ -171,10 +171,19 @@ ARENA_INLINE bool arena_os_commit(void* ptr, size_t size) {
  * @brief Release physical memory while keeping virtual reservation.
  * @param ptr Start of committed region
  * @param size Bytes to decommit
+ *
+ * The pages are also made inaccessible again, so touching a released page
+ * faults instead of silently succeeding.
  */
 ARENA_INLINE void arena_os_decommit(void* ptr, size_t size) {
   if (size > 0) {
+#if defined(__APPLE__)
+    // Darwin's MADV_DONTNEED is only an access hint; MADV_FREE discards.
+    madvise(ptr, size, MADV_FREE);
+#else
     madvise(ptr, size, MADV_DONTNEED);
+#endif
+    mprotect(ptr, size, PROT_NONE);
   }
 }
 #endif
@@ -251,9 +260,13 @@ static void autofree_impl(void* p) {
 #define ARENA_ORIG    CONCAT(_arena_, __LINE__)
 
 /**
- * Temporary arena, dropped at scope exit. Storage taken inside (slice backing,
- * `New`, `astr`) must not escape: no returning it, storing it in a
- * longer-lived structure, or handing it to a callback.
+ * Scoped temporary arena: a child bump cursor over `arena`'s unused space.
+ *
+ * Arena is nested in lifetime order and dropped en masse when the block exits,
+ * and the parent's watermark never moves.
+ *
+ * In ASan builds all dead storage is poisoned. Without ASan, only the part above
+ * the parent's committed end is made inaccessible at exit.
  *
  *   {
  *     Scoped(arena);
@@ -262,37 +275,60 @@ static void autofree_impl(void* p) {
  *     use(tmp);   // must not escape the block
  *   }
  *
- * To keep a result, use the manual block: explicit name, no shadowing,
- * with the copy-out last in the block:
+ * The child is a second cursor over the parent's region, which Goose rejects
+ * statically (at most one resizable value per data stack). Here the parent
+ * may allocate only to copy a result out, and that copy lands below the
+ * child's storage. Do it last: a later child allocation would land inside it.
+ *
+ * To keep a result, name the child and copy out last:
  *
  *   ints *result = New(arena, ints);
  *   {
- *     Arena scratch[] = {*arena};
+ *     ScopedTo(arena, scratch);
  *     ints *work = New(scratch, ints);
  *     *Push(scratch, work) = (int)42;
  *     Clone(arena, result, work);   // copy out before further arena use
  *   }
  *   return result;
+ *
+ * An abort or `longjmp` (including OOM recovery) skips the exit, so nothing
+ * is poisoned or released on that path.
  */
-#define Scoped(arena)                        \
-  __arena_restore Arena* ARENA_ORIG = arena; \
-  Arena arena[] = {*ARENA_ORIG}
+typedef struct ArenaScope {
+  Arena* parent;  // Arena whose watermark bounds the scope
+  Arena child;    // Copy that allocations inside the block use
+} ArenaScope;
 
 #ifdef __GNUC__
-#define __arena_restore __attribute__((__cleanup__(arena_restore)))
+#define __arena_restore __attribute__((__cleanup__(arena_scope_exit)))
 #else
 #define __arena_restore
 #endif
 
-static void arena_restore(Arena** a) {
-  ASAN_POISON_MEMORY_REGION(a[0]->cur, a[0]->end - a[0]->cur);
+static void arena_scope_exit(ArenaScope* scope) {
+  Arena* parent = scope->parent;
+  Arena* child = &scope->child;
+
+  // Everything at or above the parent's watermark is dead now that the block
+  // is ending. Poison while the pages are still mapped and the range covers
+  // both the child's storage and the tail it never touched.
+  if (parent->cur < child->end)
+    ASAN_POISON_MEMORY_REGION(parent->cur, child->end - parent->cur);
 #ifdef OOM_COMMIT
-  if (a[0]->commit_size) {
-    isize orig_size = a[0]->end - a[0]->beg;
-    arena_os_decommit(a[0]->end, a[0]->reserve_size - orig_size);
-  }
+  // Pages the child committed sit above the parent's and are dead: give them
+  // back rather than keeping them resident until the process ends.
+  if (child->commit_size && child->end > parent->end)
+    arena_os_decommit(parent->end, child->end - parent->end);
 #endif
 }
+
+#define Scoped(arena) ScopedTo(arena, arena)
+#define ScopedTo(arena, name)                                     \
+  __arena_restore ArenaScope ARENA_ORIG = ({                      \
+    Arena* _scope_arena = (arena);                                \
+    (ArenaScope){.parent = _scope_arena, .child = *_scope_arena}; \
+  });                                                             \
+  Arena* name = &ARENA_ORIG.child
 
 /**
  * Type-erased slice layout. Every slice descriptor is `{data, len, cap}`;
