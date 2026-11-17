@@ -129,8 +129,8 @@ builds, not silent corruption. Do not remove those `ASAN_POISON_MEMORY_REGION` c
 "simplify" the code they guard — this is the project's main safety net.
 
 **Harness layout:** `src/main.c` owns the process: it lazily creates a per-thread default arena
-(`arena_default()`, thread-local, `DEFAULT_ARENA_SIZE` ≈ 4 GB aligned in the default build),
-installs the `ArenaOOM` longjmp handler for it, runs the demos, then defers to `utest_main`.
+(`arena_default()`, thread-local, sized by `DEFAULT_ARENA_SIZE`), installs the `ArenaOOM` longjmp
+handler for it, runs the demos, then defers to `utest_main`.
 `UTEST_STATE()` lives there too and must stay in exactly one translation unit.
 
 Tests are colocated with what they test rather than in a separate tree — `src/arena_tests.c`,
@@ -151,9 +151,7 @@ bgen priority queues, both wired to the arena through the `arena_malloc`/`arena_
 
 `.clang-format` is Google-based, `ColumnLimit: 110`, `AlignConsecutiveMacros: true`, and lists
 `INITIALIZER`, `ML99_EVAL`, `vfunc`, `vfuncDefault` as `StatementMacros`; run `clang-format -i` on
-files you touch. `.clangd` compiles with `-D_CLANGD`, and `adt.h` wraps its datatype99 code in
-`#ifndef _CLANGD` because clangd cannot expand the metalang99 macros — keep macro-heavy code
-inside such guards rather than fighting the language server.
+files you touch.
 
 Vendored headers under `include/` are third-party (also listed in `include/.package` for the
 `pkg.sh` fetcher). Prefer changing `src/`, not the vendored copies — `make deps` overwrites them.

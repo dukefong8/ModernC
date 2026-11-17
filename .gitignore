@@ -3,6 +3,7 @@
 a.out
 main
 build/
+compile_commands.json
 .vscode/
 *.o
 tmp.*

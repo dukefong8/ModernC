@@ -31,7 +31,7 @@ ifeq ($(shell $(CC) --version 2>/dev/null | grep -qi clang && echo yes),yes)
 SANZ += -fsanitize-address-use-after-return=always
 endif
 
-CPPFLAGS += -I./include -D_GNU_SOURCE -DDEFAULT_ARENA_SIZE=4000000000
+CPPFLAGS += -I./include -D_GNU_SOURCE
 CFLAGS   += -MMD -MP $(WARN)
 LDFLAGS  += -lm
 
@@ -55,6 +55,13 @@ $(BUILD_DIR)/%.o : %.c
 	$(CC) -o $@ $(CPPFLAGS) $(CFLAGS) -c $<
 
 -include $(DEP)
+
+# clice's compilation database: bear records the commands `make` runs, in the
+# compile_commands.json at the project root where clice finds it.
+.PHONY: cdb
+cdb:
+	$(MAKE) clean
+	bear -- make
 
 .PHONY: clean
 clean:

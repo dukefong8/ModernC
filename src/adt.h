@@ -5,7 +5,6 @@
 #include "utest.h"
 #include <math.h>
 
-#ifndef _CLANGD
 #include "datatype99.h"
 
 #define EXPR(expr)       New(arena, Expr, 1, (Expr[]){expr})
@@ -53,5 +52,3 @@ UTEST(datatype99, adt) {
   Arena arena = arena_init(mem, size);
   ASSERT_EQ(0.0, eval(expr(&arena)));
 }
-
-#endif // _CLANGD

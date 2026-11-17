@@ -1,4 +1,0 @@
--DOOM_COMMIT
--D_GNU_SOURCE
--I
-./include

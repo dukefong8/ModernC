@@ -1,5 +1,0 @@
-CompileFlags:
-  Add: [-D_CLANGD, -fsyntax-only, -fmacro-backtrace-limit=1]
-
-Diagnostics:
-  Suppress: []
